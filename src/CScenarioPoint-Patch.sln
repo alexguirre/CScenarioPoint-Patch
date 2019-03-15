@@ -1,0 +1,25 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio 15
+VisualStudioVersion = 15.0.28307.271
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{D8F0D45A-F416-4B10-879E-F360801CDBDA}") = "CScenarioPoint-Patch", "CScenarioPoint-Patch.vcxproj", "{CE40CF6A-93B2-4F56-8631-B8A1500A41AB}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|x64 = Debug|x64
+		Release|x64 = Release|x64
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{CE40CF6A-93B2-4F56-8631-B8A1500A41AB}.Debug|x64.ActiveCfg = Debug|x64
+		{CE40CF6A-93B2-4F56-8631-B8A1500A41AB}.Debug|x64.Build.0 = Debug|x64
+		{CE40CF6A-93B2-4F56-8631-B8A1500A41AB}.Release|x64.ActiveCfg = Release|x64
+		{CE40CF6A-93B2-4F56-8631-B8A1500A41AB}.Release|x64.Build.0 = Release|x64
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {4DD2750C-5F17-44C0-AE45-E1E5A19628E1}
+	EndGlobalSection
+EndGlobal
