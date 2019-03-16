@@ -11,5 +11,9 @@
     <ClInclude Include="Hashing.h" />
     <ClInclude Include="Hooking.h" />
     <ClInclude Include="UsingAllocator.h" />
+    <ClInclude Include="CScenarioPoint.h" />
+    <ClInclude Include="CScenarioPointRegion.h" />
+    <ClInclude Include="atArray.h" />
+    <ClInclude Include="CScenarioInfo.h" />
   </ItemGroup>
 </Project>
