@@ -108,17 +108,13 @@ void Patch4()
 		void InternalMain() override
 		{
 			push(rcx);
-			push(r8);
-			push(r9);
-			sub(rsp, 0x20);
+			sub(rsp, 0x10);
 
 			mov(rcx, rdi);
 			mov(rax, (uintptr_t)GetModelSetIndex);
 			call(rax);
 
-			add(rsp, 0x20);
-			pop(r9);
-			pop(r8);
+			add(rsp, 0x10);
 			pop(rcx);
 
 			mov(edx, eax);
@@ -166,18 +162,14 @@ void Patch5()
 		{
 			push(rcx);
 			push(rdx);
-			push(r8);
-			push(r9);
-			sub(rsp, 0x28);
+			sub(rsp, 0x18);
 
 			mov(rcx, rdi); // first param: CScenarioInfo*
 			mov(rdx, r14); // second param: CScenarioPoint*
 			mov(rax, (uintptr_t)GetModelSetIndex);
 			call(rax);
 
-			add(rsp, 0x28);
-			pop(r9);
-			pop(r8);
+			add(rsp, 0x18);
 			pop(rdx);
 			pop(rcx);
 
