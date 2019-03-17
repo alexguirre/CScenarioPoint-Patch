@@ -186,6 +186,52 @@ void Patch5()
 	hook::put(hook::get_pattern("41 81 FF ? ? ? ? 0F 85 ? ? ? ? B9", 3), 0xFFFFFFFF);
 }
 
+void(*sub_C0ADC4_orig)(char*, bool);
+void sub_C0ADC4_detour(char* taskUseScenario, bool a2)
+{
+	bool modified = false;
+	char* bounds = nullptr;
+	char* ped = *(char**)(taskUseScenario + 0x10);
+	if (ped)
+	{
+		char* phInst = *(char**)(ped + 0x1100);
+		if (phInst)
+		{
+			char* archetype = *(char**)(phInst + 0x10);
+			if (archetype)
+			{
+				bounds = *(char**)(archetype + 0x20);
+				if (bounds)
+				{
+					uint8_t type = *(uint8_t*)(bounds + 0x10);
+					if (type == 10						// type == COMPOSITE
+						&& !(*(char**)(bounds + 0x90))) // TypeAndIncludeFlags == null
+					{
+						static char tmpBuffer[32] = {};
+
+						// TODO: figure out why TypeAndIncludeFlags is null only with the patch applied
+						*(char**)(bounds + 0x90) = tmpBuffer;
+						modified = true;
+					}
+				}
+			}
+		}
+	}
+
+	sub_C0ADC4_orig(taskUseScenario, a2);
+
+	if (modified)
+	{
+		*(char**)(bounds + 0x90) = nullptr;
+	}
+}
+
+void Patch6()
+{
+	// crash temporary fix
+	MH_CreateHook(hook::get_pattern("40 8A F2 48 8B F9 E8 ? ? ? ? F3 0F 10 80 ? ? ? ? F3 0F 10 88", -0x13), sub_C0ADC4_detour, (void**)&sub_C0ADC4_orig);
+}
+
 DWORD WINAPI Main()
 {
 	if (EnableLogging)
@@ -202,13 +248,12 @@ DWORD WINAPI Main()
 
 	MH_Initialize();
 	
-	// TODO: after some time it crashes
-
 	Patch1();
 	Patch2();
 	Patch3();
 	Patch4();
 	Patch5();
+	Patch6();
 
 	MH_EnableHook(MH_ALL_HOOKS);
 
