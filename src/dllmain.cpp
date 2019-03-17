@@ -277,6 +277,19 @@ void Patch7()
 	MH_CreateHook(hook::get_pattern("48 89 5C 24 ? 57 48 83 EC 20 C6 41 16 FF 41 8A C0"), CScenarioPoint_SetModelSet_detour, (void**)&CScenarioPoint_SetModelSet_orig);
 }
 
+void(*CScenarioPoint_Delete_orig)(CScenarioPoint*);
+void CScenarioPoint_Delete_detour(CScenarioPoint* _this)
+{
+	RemovePoint(_this);
+
+	CScenarioPoint_Delete_orig(_this);
+}
+
+void Patch8()
+{
+	MH_CreateHook(hook::get_pattern("48 8B 0D ? ? ? ? E8 ? ? ? ? 48 8B CB E8 ? ? ? ? C6 05", -0xC), CScenarioPoint_Delete_detour, (void**)&CScenarioPoint_Delete_orig);
+}
+
 DWORD WINAPI Main()
 {
 	if (EnableLogging)
@@ -300,6 +313,7 @@ DWORD WINAPI Main()
 	Patch5();
 	Patch6();
 	Patch7();
+	Patch8();
 
 	MH_EnableHook(MH_ALL_HOOKS);
 
