@@ -49,6 +49,16 @@ struct ExtendedScenarioPoint
 };
 std::unordered_map<CScenarioPoint*, ExtendedScenarioPoint> g_Points;
 
+void SavePoint(CScenarioPoint* point, uint32_t modelSetId)
+{
+	g_Points[point] = { modelSetId };
+}
+
+void RemovePoint(CScenarioPoint* point)
+{
+	g_Points.erase(point);
+}
+
 void(*CScenarioPoint_TransformIdsToIndices_orig)(CScenarioPointRegion::sLookUps*, CScenarioPoint*);
 void CScenarioPoint_TransformIdsToIndices_detour(CScenarioPointRegion::sLookUps* indicesLookups, CScenarioPoint* point)
 {
@@ -59,9 +69,8 @@ void CScenarioPoint_TransformIdsToIndices_detour(CScenarioPointRegion::sLookUps*
 	atArray<uint32_t>* modelSetNames = IsScenarioVehicleInfo(scenarioIndex) ?
 										&indicesLookups->VehicleModelSetNames :
 										&indicesLookups->PedModelSetNames;
-	p.ModelSetId = modelSetNames->Items[point->ModelSetId];
 
-	g_Points.insert({ point, p });
+	SavePoint(point, modelSetNames->Items[point->ModelSetId]);
 
 	CScenarioPoint_TransformIdsToIndices_orig(indicesLookups, point);
 
@@ -232,6 +241,42 @@ void Patch6()
 	MH_CreateHook(hook::get_pattern("40 8A F2 48 8B F9 E8 ? ? ? ? F3 0F 10 80 ? ? ? ? F3 0F 10 88", -0x13), sub_C0ADC4_detour, (void**)&sub_C0ADC4_orig);
 }
 
+using CAmbientModelSetsManager_FindIndexByHash_fn = uint32_t(*)(void* mgr, int type, uint32_t hash);
+CAmbientModelSetsManager_FindIndexByHash_fn CAmbientModelSetsManager_FindIndexByHash;
+void** g_AmbientModelSetsMgr;
+
+bool(*CScenarioPoint_SetModelSet_orig)(CScenarioPoint*, uint32_t*, bool);
+bool CScenarioPoint_SetModelSet_detour(CScenarioPoint* _this, uint32_t* modelSetHash, bool isVehicle)
+{
+	constexpr uint32_t usepopulation_hash = 0xA7548A2;
+
+	bool success = true;
+	uint32_t hash = *modelSetHash;
+	uint32_t index = 0xFFFFFFFF;
+	if (hash != usepopulation_hash)
+	{
+		index = CAmbientModelSetsManager_FindIndexByHash(*g_AmbientModelSetsMgr, isVehicle ? 2 : 0, hash);
+		if (index == 0xFFFFFFFF)
+		{
+			success = false;
+		}
+	}
+
+	SavePoint(_this, index);
+	_this->ModelSetId = index;
+
+	return success;
+}
+
+void Patch7()
+{
+	g_AmbientModelSetsMgr = hook::get_address<void**>(hook::get_pattern("48 8B 0D ? ? ? ? E8 ? ? ? ? 83 F8 FF 75 07", 3));
+
+	CAmbientModelSetsManager_FindIndexByHash = (CAmbientModelSetsManager_FindIndexByHash_fn)hook::get_pattern("44 89 44 24 ? 48 83 EC 28 48 63 C2 48 8D 14 80");
+
+	MH_CreateHook(hook::get_pattern("48 89 5C 24 ? 57 48 83 EC 20 C6 41 16 FF 41 8A C0"), CScenarioPoint_SetModelSet_detour, (void**)&CScenarioPoint_SetModelSet_orig);
+}
+
 DWORD WINAPI Main()
 {
 	if (EnableLogging)
@@ -254,6 +299,7 @@ DWORD WINAPI Main()
 	Patch4();
 	Patch5();
 	Patch6();
+	Patch7();
 
 	MH_EnableHook(MH_ALL_HOOKS);
 
