@@ -36,6 +36,8 @@ void WaitForIntroToFinish()
 
 void Patch1()
 {
+	spdlog::info("Patch 1...");
+	
 	// CScenarioPointRegion::LookUps::ConvertHashesToIndices
 	hook::put(hook::get_pattern("41 BD ? ? ? ? 85 ED 7E 51 4C 8B F3", 2), 0xFFFFFFFF);
 }
@@ -79,6 +81,8 @@ void CScenarioPoint_TransformIdsToIndices_detour(CScenarioPointRegion::sLookUps*
 
 void Patch2()
 {
+	spdlog::info("Patch 2...");
+
 	IsScenarioVehicleInfo = (IsScenarioVehicleInfo_fn)hook::pattern("48 83 EC 28 48 8B 15 ? ? ? ? 0F B7 42 10 3B C8 7D 2A").get(1).get<void>();
 
 	// CScenarioPoint::TransformIdsToIndices
@@ -87,12 +91,16 @@ void Patch2()
 
 void Patch3()
 {
+	spdlog::info("Patch 3...");
+
 	// CScenarioInfoManager::IsValidModelSet
 	hook::put(hook::get_pattern("81 FF ? ? ? ? 74 6F 48 8B 05", 2), 0xFFFFFFFF);
 }
 
 void Patch4()
 {
+	spdlog::info("Patch 4...");
+
 	// CScenarioPoint::CanSpawn
 	static struct : jitasm::Frontend
 	{
@@ -138,6 +146,8 @@ void Patch4()
 
 void Patch5()
 {
+	spdlog::info("Patch 5...");
+
 	// bool GetAndLoadScenarioPointModel(__int64 rcx0, signed int scenarioIndex, CScenarioPoint *point, __int64 a4, ...)
 	static struct : jitasm::Frontend
 	{
@@ -237,6 +247,8 @@ void sub_C0ADC4_detour(char* taskUseScenario, bool a2)
 
 void Patch6()
 {
+	spdlog::info("Patch 6...");
+
 	// crash temporary fix
 	MH_CreateHook(hook::get_pattern("40 8A F2 48 8B F9 E8 ? ? ? ? F3 0F 10 80 ? ? ? ? F3 0F 10 88", -0x13), sub_C0ADC4_detour, (void**)&sub_C0ADC4_orig);
 }
@@ -270,6 +282,8 @@ bool CScenarioPoint_SetModelSet_detour(CScenarioPoint* _this, uint32_t* modelSet
 
 void Patch7()
 {
+	spdlog::info("Patch 7...");
+
 	g_AmbientModelSetsMgr = hook::get_address<void**>(hook::get_pattern("48 8B 0D ? ? ? ? E8 ? ? ? ? 83 F8 FF 75 07", 3));
 
 	CAmbientModelSetsManager_FindIndexByHash = (CAmbientModelSetsManager_FindIndexByHash_fn)hook::get_pattern("44 89 44 24 ? 48 83 EC 28 48 63 C2 48 8D 14 80");
@@ -287,6 +301,8 @@ void CScenarioPoint_Delete_detour(CScenarioPoint* _this)
 
 void Patch8()
 {
+	spdlog::info("Patch 8...");
+
 	MH_CreateHook(hook::get_pattern("48 8B 0D ? ? ? ? E8 ? ? ? ? 48 8B CB E8 ? ? ? ? C6 05", -0xC), CScenarioPoint_Delete_detour, (void**)&CScenarioPoint_Delete_orig);
 }
 
@@ -302,8 +318,7 @@ DWORD WINAPI Main()
 		spdlog::set_level(spdlog::level::off);
 	}
 
-	spdlog::info("Main");
-
+	spdlog::info("Initializing MinHook...");
 	MH_Initialize();
 	
 	Patch1();
