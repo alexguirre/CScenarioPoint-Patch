@@ -12,7 +12,7 @@
 
 constexpr bool EnableLogging = true;
 
-void WaitForWindow()
+static void WaitForWindow()
 {
 	spdlog::info("Waiting for window...");
 	while (!FindWindow("grcWindow", NULL))
@@ -21,7 +21,7 @@ void WaitForWindow()
 	}
 }
 
-void WaitForIntroToFinish()
+static void WaitForIntroToFinish()
 {
 	uintptr_t addr = (uintptr_t)hook::get_pattern("44 39 3D ? ? ? ? 75 09 83 BB ? ? ? ? ? 7D 24");
 	addr = addr + *(int*)(addr + 3) + 7;
@@ -34,7 +34,7 @@ void WaitForIntroToFinish()
 	}
 }
 
-void Patch1()
+static void Patch1()
 {
 	spdlog::info("Patch 1...");
 	
@@ -43,26 +43,26 @@ void Patch1()
 }
 
 using IsScenarioVehicleInfo_fn = bool(*)(uint32_t index);
-IsScenarioVehicleInfo_fn IsScenarioVehicleInfo;
+static IsScenarioVehicleInfo_fn IsScenarioVehicleInfo;
 
 struct ExtendedScenarioPoint
 {
 	uint32_t ModelSetId;
 };
-std::unordered_map<CScenarioPoint*, ExtendedScenarioPoint> g_Points;
+static std::unordered_map<CScenarioPoint*, ExtendedScenarioPoint> g_Points;
 
-void SavePoint(CScenarioPoint* point, uint32_t modelSetId)
+static void SavePoint(CScenarioPoint* point, uint32_t modelSetId)
 {
 	g_Points[point] = { modelSetId };
 }
 
-void RemovePoint(CScenarioPoint* point)
+static void RemovePoint(CScenarioPoint* point)
 {
 	g_Points.erase(point);
 }
 
-void(*CScenarioPoint_TransformIdsToIndices_orig)(CScenarioPointRegion::sLookUps*, CScenarioPoint*);
-void CScenarioPoint_TransformIdsToIndices_detour(CScenarioPointRegion::sLookUps* indicesLookups, CScenarioPoint* point)
+static void(*CScenarioPoint_TransformIdsToIndices_orig)(CScenarioPointRegion::sLookUps*, CScenarioPoint*);
+static void CScenarioPoint_TransformIdsToIndices_detour(CScenarioPointRegion::sLookUps* indicesLookups, CScenarioPoint* point)
 {
 	uint32_t scenarioIndex = indicesLookups->TypeNames.Items[point->iType];
 	ExtendedScenarioPoint p;
@@ -79,7 +79,7 @@ void CScenarioPoint_TransformIdsToIndices_detour(CScenarioPointRegion::sLookUps*
 	//spdlog::info(" TransformIdsToIndices:: OrigIndex -> {} | FinalIndex -> {}  (Total: {})", p.ModelSetId, point->ModelSetId, g_Points.size());
 }
 
-void Patch2()
+static void Patch2()
 {
 	spdlog::info("Patch 2...");
 
@@ -89,7 +89,7 @@ void Patch2()
 	MH_CreateHook(hook::get_pattern("48 8B 01 44 0F B6 42 ? 0F B6 72 16", -0xF), CScenarioPoint_TransformIdsToIndices_detour, (void**)&CScenarioPoint_TransformIdsToIndices_orig);
 }
 
-void Patch3()
+static void Patch3()
 {
 	spdlog::info("Patch 3...");
 
@@ -97,7 +97,7 @@ void Patch3()
 	hook::put(hook::get_pattern("81 FF ? ? ? ? 74 6F 48 8B 05", 2), 0xFFFFFFFF);
 }
 
-void Patch4()
+static void Patch4()
 {
 	spdlog::info("Patch 4...");
 
@@ -144,7 +144,7 @@ void Patch4()
 	hook::call(location, getModelSetIndexStub.GetCode());
 }
 
-void Patch5()
+static void Patch5()
 {
 	spdlog::info("Patch 5...");
 
@@ -205,8 +205,8 @@ void Patch5()
 	hook::put(hook::get_pattern("41 81 FF ? ? ? ? 0F 85 ? ? ? ? B9", 3), 0xFFFFFFFF);
 }
 
-void(*sub_C0ADC4_orig)(char*, bool);
-void sub_C0ADC4_detour(char* taskUseScenario, bool a2)
+static void(*sub_C0ADC4_orig)(char*, bool);
+static void sub_C0ADC4_detour(char* taskUseScenario, bool a2)
 {
 	bool modified = false;
 	char* bounds = nullptr;
@@ -245,7 +245,7 @@ void sub_C0ADC4_detour(char* taskUseScenario, bool a2)
 	}
 }
 
-void Patch6()
+static void Patch6()
 {
 	spdlog::info("Patch 6...");
 
@@ -254,11 +254,11 @@ void Patch6()
 }
 
 using CAmbientModelSetsManager_FindIndexByHash_fn = uint32_t(*)(void* mgr, int type, uint32_t hash);
-CAmbientModelSetsManager_FindIndexByHash_fn CAmbientModelSetsManager_FindIndexByHash;
-void** g_AmbientModelSetsMgr;
+static CAmbientModelSetsManager_FindIndexByHash_fn CAmbientModelSetsManager_FindIndexByHash;
+static void** g_AmbientModelSetsMgr;
 
-bool(*CScenarioPoint_SetModelSet_orig)(CScenarioPoint*, uint32_t*, bool);
-bool CScenarioPoint_SetModelSet_detour(CScenarioPoint* _this, uint32_t* modelSetHash, bool isVehicle)
+static bool(*CScenarioPoint_SetModelSet_orig)(CScenarioPoint*, uint32_t*, bool);
+static bool CScenarioPoint_SetModelSet_detour(CScenarioPoint* _this, uint32_t* modelSetHash, bool isVehicle)
 {
 	constexpr uint32_t usepopulation_hash = 0xA7548A2;
 
@@ -280,7 +280,7 @@ bool CScenarioPoint_SetModelSet_detour(CScenarioPoint* _this, uint32_t* modelSet
 	return success;
 }
 
-void Patch7()
+static void Patch7()
 {
 	spdlog::info("Patch 7...");
 
@@ -291,22 +291,22 @@ void Patch7()
 	MH_CreateHook(hook::get_pattern("48 89 5C 24 ? 57 48 83 EC 20 C6 41 16 FF 41 8A C0"), CScenarioPoint_SetModelSet_detour, (void**)&CScenarioPoint_SetModelSet_orig);
 }
 
-void(*CScenarioPoint_Delete_orig)(CScenarioPoint*);
-void CScenarioPoint_Delete_detour(CScenarioPoint* _this)
+static void(*CScenarioPoint_Delete_orig)(CScenarioPoint*);
+static void CScenarioPoint_Delete_detour(CScenarioPoint* _this)
 {
 	RemovePoint(_this);
 
 	CScenarioPoint_Delete_orig(_this);
 }
 
-void Patch8()
+static void Patch8()
 {
 	spdlog::info("Patch 8...");
 
 	MH_CreateHook(hook::get_pattern("48 8B 0D ? ? ? ? E8 ? ? ? ? 48 8B CB E8 ? ? ? ? C6 05", -0xC), CScenarioPoint_Delete_detour, (void**)&CScenarioPoint_Delete_orig);
 }
 
-DWORD WINAPI Main()
+static DWORD WINAPI Main()
 {
 	if (EnableLogging)
 	{
