@@ -300,6 +300,52 @@ static void Patch8()
 	MH_CreateHook(hook::get_pattern("48 8B 0D ? ? ? ? E8 ? ? ? ? 48 8B CB E8 ? ? ? ? C6 05", -0xC), CScenarioPoint_Delete_detour, (void**)&CScenarioPoint_Delete_orig);
 }
 
+static void Patch9()
+{
+	spdlog::info("Patch 9...");
+
+	static struct : jitasm::Frontend
+	{
+		static int GetModelSetIndex(CScenarioPoint* point)
+		{
+			auto p = g_Points.find(point);
+			if (p != g_Points.end())
+			{
+				return p->second.ModelSetId;
+			}
+			else
+			{
+				return point->ModelSetId;
+			}
+		}
+
+		void InternalMain() override
+		{
+			push(rcx);
+			sub(rsp, 0x10);
+
+			mov(rcx, rdi); // param: CScenarioPoint*
+			mov(rax, (uintptr_t)GetModelSetIndex);
+			call(rax);
+
+			add(rsp, 0x10);
+			pop(rcx);
+
+			cmp(eax, 0xFFFFFFFF);
+			ret();
+		}
+	} getModelSetIndexAndCmpStub;
+
+	hook::pattern pattern("0F B6 47 16 3D ? ? ? ? 74 13 8B D0 48 8B 05");
+	pattern.count(2);
+	pattern.for_each_result([](const hook::pattern_match& match)
+	{
+		auto location = match.get<void>();
+		hook::nop(location, 0x9);
+		hook::call(location, getModelSetIndexAndCmpStub.GetCode());
+	});
+}
+
 static DWORD WINAPI Main()
 {
 	if (EnableLogging)
@@ -323,6 +369,7 @@ static DWORD WINAPI Main()
 	Patch6();
 	Patch7();
 	Patch8();
+	Patch9();
 
 	MH_EnableHook(MH_ALL_HOOKS);
 
