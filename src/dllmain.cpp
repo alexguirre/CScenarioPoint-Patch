@@ -155,26 +155,20 @@ static void Patch5()
 		{
 			constexpr uint32_t CScenarioVehicleInfo_ClassId = 0xFB9AD9D7;
 
-
-			int result = 0xFFFFFFFF;
 			if (scenario->GetIsClassId(CScenarioVehicleInfo_ClassId))
 			{
-				//return 0xFFFFFFFF;
+				return 0xFFFFFFFF;
 			}
 
 			auto p = g_Points.find(point);
 			if (p != g_Points.end())
 			{
-				result = p->second.ModelSetId;
+				return p->second.ModelSetId;
 			}
 			else
 			{
-				result = point->ModelSetId;
+				return point->ModelSetId;
 			}
-
-	/*		spdlog::info("GetModelSetIndex({}, {}) -> {}", (void*)scenario, (void*)point, result);
-			spdlog::default_logger()->flush();*/
-			return result;
 		}
 
 		void InternalMain() override
