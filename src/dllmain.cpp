@@ -199,54 +199,6 @@ static void Patch5()
 	hook::put(hook::get_pattern("41 81 FF ? ? ? ? 0F 85 ? ? ? ? B9", 3), 0xFFFFFFFF);
 }
 
-static void(*sub_C0ADC4_orig)(char*, bool);
-static void sub_C0ADC4_detour(char* taskUseScenario, bool a2)
-{
-	bool modified = false;
-	char* bounds = nullptr;
-	char* ped = *(char**)(taskUseScenario + 0x10);
-	if (ped)
-	{
-		char* phInst = *(char**)(ped + 0x1100);
-		if (phInst)
-		{
-			char* archetype = *(char**)(phInst + 0x10);
-			if (archetype)
-			{
-				bounds = *(char**)(archetype + 0x20);
-				if (bounds)
-				{
-					uint8_t type = *(uint8_t*)(bounds + 0x10);
-					if (type == 10						// type == COMPOSITE
-						&& !(*(char**)(bounds + 0x90))) // TypeAndIncludeFlags == null
-					{
-						static char tmpBuffer[32] = {};
-
-						// TODO: figure out why TypeAndIncludeFlags is null only with the patch applied
-						*(char**)(bounds + 0x90) = tmpBuffer;
-						modified = true;
-					}
-				}
-			}
-		}
-	}
-
-	sub_C0ADC4_orig(taskUseScenario, a2);
-
-	if (modified)
-	{
-		*(char**)(bounds + 0x90) = nullptr;
-	}
-}
-
-static void Patch6()
-{
-	spdlog::info("Patch 6...");
-
-	// crash temporary fix
-	MH_CreateHook(hook::get_pattern("40 8A F2 48 8B F9 E8 ? ? ? ? F3 0F 10 80 ? ? ? ? F3 0F 10 88", -0x13), sub_C0ADC4_detour, (void**)&sub_C0ADC4_orig);
-}
-
 using CAmbientModelSetsManager_FindIndexByHash_fn = uint32_t(*)(void* mgr, int type, uint32_t hash);
 static CAmbientModelSetsManager_FindIndexByHash_fn CAmbientModelSetsManager_FindIndexByHash;
 static void** g_AmbientModelSetsMgr;
@@ -274,9 +226,9 @@ static bool CScenarioPoint_SetModelSet_detour(CScenarioPoint* _this, uint32_t* m
 	return success;
 }
 
-static void Patch7()
+static void Patch6()
 {
-	spdlog::info("Patch 7...");
+	spdlog::info("Patch 6...");
 
 	g_AmbientModelSetsMgr = hook::get_address<void**>(hook::get_pattern("48 8B 0D ? ? ? ? E8 ? ? ? ? 83 F8 FF 75 07", 3));
 
@@ -293,16 +245,16 @@ static void CScenarioPoint_Delete_detour(CScenarioPoint* _this)
 	CScenarioPoint_Delete_orig(_this);
 }
 
-static void Patch8()
+static void Patch7()
 {
-	spdlog::info("Patch 8...");
+	spdlog::info("Patch 7...");
 
 	MH_CreateHook(hook::get_pattern("48 8B 0D ? ? ? ? E8 ? ? ? ? 48 8B CB E8 ? ? ? ? C6 05", -0xC), CScenarioPoint_Delete_detour, (void**)&CScenarioPoint_Delete_orig);
 }
 
-static void Patch9()
+static void Patch8()
 {
-	spdlog::info("Patch 9...");
+	spdlog::info("Patch 8...");
 
 	static struct : jitasm::Frontend
 	{
@@ -369,7 +321,6 @@ static DWORD WINAPI Main()
 	Patch6();
 	Patch7();
 	Patch8();
-	Patch9();
 
 	MH_EnableHook(MH_ALL_HOOKS);
 
