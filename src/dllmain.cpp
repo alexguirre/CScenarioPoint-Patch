@@ -444,6 +444,49 @@ static void Patch10()
 	hook::call(location, savePointStub.GetCode());
 }
 
+static void(*CSpawnPointOverrideExtension_OverrideScenarioPoint_orig)(char* spawnPointOverrideExtension, CScenarioPoint* point);
+static void CSpawnPointOverrideExtension_OverrideScenarioPoint_detour(char* spawnPointOverrideExtension, CScenarioPoint* point)
+{
+	auto p = g_Points.find(point);
+	if (p != g_Points.end()) // every point passed to this method should already be in the map from the CScenarioPoint::ctorWithEntity hook
+	{
+		uint32_t origiType = p->second.iType;
+		uint32_t origModelSetId = p->second.ModelSetId;
+
+		uint32_t overrideScenarioType = *(uint32_t*)(spawnPointOverrideExtension + 0x8);
+		if (overrideScenarioType)
+		{
+			uint32_t newScenarioType = CScenarioInfoManager_GetScenarioTypeByHash(*g_ScenarioInfoMgr, &overrideScenarioType, true, true);
+			if (newScenarioType == 0xFFFFFFFF)
+				newScenarioType = 0;
+			p->second.iType = newScenarioType;
+		}
+
+		uint32_t overrideModelSet = *(uint32_t*)(spawnPointOverrideExtension + 0x14);
+		if (overrideModelSet)
+		{
+			overrideModelSet = GetFinalModelSetHash(overrideModelSet);
+			int modelSetType = IsScenarioVehicleInfo(p->second.iType) ? 2 : 0;
+			uint32_t newModelSet = CAmbientModelSetsManager_FindIndexByHash(*g_AmbientModelSetsMgr, modelSetType, overrideModelSet);
+			p->second.ModelSetId = newModelSet;
+		}
+
+
+		spdlog::info("OverrideScenarioPoint:: detour -> spawnPointOverrideExtension:{}, point:{}, iType:{:08X}, new_iType:{:08X}, ModelSetId:{:08X}, new_ModelSetId:{:08X}",
+			(void*)spawnPointOverrideExtension, (void*)point, origiType, p->second.iType, origModelSetId, p->second.ModelSetId);
+	}
+
+	CSpawnPointOverrideExtension_OverrideScenarioPoint_orig(spawnPointOverrideExtension, point);
+}
+
+static void Patch11()
+{
+	// CSpawnPointOverrideExtension::OverrideScenarioPoint
+
+	MH_CreateHook(hook::get_pattern("48 83 EC 20 8B 41 08 33 FF 48 8B F2", -0xB), CSpawnPointOverrideExtension_OverrideScenarioPoint_detour,
+		(void**)&CSpawnPointOverrideExtension_OverrideScenarioPoint_orig);
+}
+
 static DWORD WINAPI Main()
 {
 	if (EnableLogging)
@@ -472,6 +515,7 @@ static DWORD WINAPI Main()
 	Patch8();
 	Patch9();
 	Patch10();
+	Patch11();
 
 	MH_EnableHook(MH_ALL_HOOKS);
 
