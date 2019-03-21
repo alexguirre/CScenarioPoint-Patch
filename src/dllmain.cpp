@@ -95,7 +95,7 @@ static void CScenarioPoint_TransformIdsToIndices_detour(CScenarioPointRegion::sL
 
 	CScenarioPoint_TransformIdsToIndices_orig(indicesLookups, point);
 
-	//spdlog::info(" TransformIdsToIndices:: OrigIndex -> {} | FinalIndex -> {}  (Total: {})", p.ModelSetId, point->ModelSetId, g_Points.size());
+	spdlog::info(" TransformIdsToIndices:: detour -> point:{}, scenarioType:{:08X}, modelSet:{:08X}", (void*)point, scenarioIndex, modelSetNames->Items[point->ModelSetId]);
 }
 
 static void Patch2()
@@ -487,6 +487,111 @@ static void Patch11()
 		(void**)&CSpawnPointOverrideExtension_OverrideScenarioPoint_orig);
 }
 
+static uint32_t GetScenarioType(CScenarioPoint* point)
+{
+	auto p = g_Points.find(point);
+	if (p != g_Points.end())
+	{
+		return p->second.iType;
+	}
+	else
+	{
+		return point->iType;
+	}
+}
+
+static void Patch12()
+{
+	// patch calls to CScenarioPoint::GetScenarioType
+
+	constexpr int R14_REG = 0;
+	constexpr int EBX_REG = 1;
+	constexpr int ECX_REG = 2;
+	constexpr int ESI_REG = 3;
+	struct stub : jitasm::Frontend
+	{
+		const int m_reg;
+
+		stub(int reg) : m_reg(reg)
+		{
+		}
+
+		void InternalMain() override
+		{
+			sub(rsp, 0x8);
+
+			// rcx already is CScenarioPoint*
+			mov(rax, (uintptr_t)GetScenarioType);
+			call(rax);
+
+			add(rsp, 0x8);
+
+			switch (m_reg)
+			{
+			case R14_REG: mov(r14d, eax); break;
+			case EBX_REG: mov(ebx, eax); break;
+			case ECX_REG: mov(ecx, eax); break;
+			case ESI_REG: mov(esi, eax); break;
+			}
+			
+			ret();
+		}
+	};
+	static stub getScenarioTypeAndStoreInR14Stub(R14_REG);
+	static stub getScenarioTypeAndStoreInEBXStub(EBX_REG);
+	static stub getScenarioTypeAndStoreInECXStub(ECX_REG);
+	static stub getScenarioTypeAndStoreInESIStub(ESI_REG);
+
+	{
+		auto location = hook::get_pattern("E8 ? ? ? ? 44 0F B6 F0 41 8B CE E8");
+		hook::nop(location, 0x9);
+		hook::call(location, getScenarioTypeAndStoreInR14Stub.GetCode());
+	}
+
+	{
+		auto location = hook::get_pattern("E8 ? ? ? ? 0F B6 D8 8B CB E8");
+		hook::nop(location, 0x8);
+		hook::call(location, getScenarioTypeAndStoreInEBXStub.GetCode());
+	}
+	{
+		auto location = hook::get_pattern("E8 ? ? ? ? 4C 8B 0D ? ? ? ? 45 0F B7 51");
+		hook::nop(location, 0x5);
+		hook::call(location, getScenarioTypeAndStoreInEBXStub.GetCode());
+		hook::nop((char*)location + 0x11, 3);
+	}
+	{
+		auto location = hook::get_pattern("E8 ? ? ? ? 48 8B 15 ? ? ? ? 0F B7 4A 10");
+		hook::nop(location, 0x5);
+		hook::call(location, getScenarioTypeAndStoreInEBXStub.GetCode());
+		hook::nop((char*)location + 0x10, 3);
+	}
+
+	{
+		auto location = hook::get_pattern("E8 ? ? ? ? 0F B6 C8 E8");
+		hook::nop(location, 0x8);
+		hook::call(location, getScenarioTypeAndStoreInECXStub.GetCode());
+	}
+	{
+		auto location = hook::get_pattern("E8 ? ? ? ? 48 8B D5 0F B6 C8");
+		hook::nop(location, 0x5);
+		hook::call(location, getScenarioTypeAndStoreInECXStub.GetCode());
+		hook::nop((char*)location + 0x8, 3);
+	}
+	{
+		auto location = hook::get_pattern("E8 ? ? ? ? 48 8B D3 0F B6 C8");
+		hook::nop(location, 0x5);
+		hook::call(location, getScenarioTypeAndStoreInECXStub.GetCode());
+		hook::nop((char*)location + 0x8, 3);
+	}
+
+	{
+		auto location = hook::get_pattern("E8 ? ? ? ? 4C 8B 2D ? ? ? ? 44 8A FF");
+		hook::nop(location, 0x5);
+		hook::call(location, getScenarioTypeAndStoreInESIStub.GetCode());
+		hook::nop((char*)location + 0xF, 3);
+	}
+}
+
 static DWORD WINAPI Main()
 {
 	if (EnableLogging)
@@ -516,6 +621,7 @@ static DWORD WINAPI Main()
 	Patch9();
 	Patch10();
 	Patch11();
+	Patch12();
 
 	MH_EnableHook(MH_ALL_HOOKS);
 
