@@ -34,26 +34,37 @@ static void WaitForIntroToFinish()
 	}
 }
 
-static void Patch1()
+using IsScenarioVehicleInfo_fn = bool(*)(uint32_t index);
+using CAmbientModelSetsManager_FindIndexByHash_fn = uint32_t(*)(void* mgr, int type, uint32_t hash);
+using CScenarioInfoManager_GetScenarioTypeByHash_fn = int(*)(void* mgr, uint32_t* name, bool a3, bool searchInScenarioTypeGroups);
+static IsScenarioVehicleInfo_fn IsScenarioVehicleInfo;
+static CAmbientModelSetsManager_FindIndexByHash_fn CAmbientModelSetsManager_FindIndexByHash;
+static CScenarioInfoManager_GetScenarioTypeByHash_fn CScenarioInfoManager_GetScenarioTypeByHash;
+
+static void FindGameFunctions()
 {
-	spdlog::info("Patch 1...");
-	
-	// CScenarioPointRegion::LookUps::ConvertHashesToIndices
-	hook::put(hook::get_pattern("41 BD ? ? ? ? 85 ED 7E 51 4C 8B F3", 2), 0xFFFFFFFF);
+	IsScenarioVehicleInfo = (IsScenarioVehicleInfo_fn)hook::pattern("48 83 EC 28 48 8B 15 ? ? ? ? 0F B7 42 10 3B C8 7D 2A").get(1).get<void>();
+	CAmbientModelSetsManager_FindIndexByHash = (CAmbientModelSetsManager_FindIndexByHash_fn)hook::get_pattern("44 89 44 24 ? 48 83 EC 28 48 63 C2 48 8D 14 80");
+	CScenarioInfoManager_GetScenarioTypeByHash = (CScenarioInfoManager_GetScenarioTypeByHash_fn)hook::get_pattern("48 8B F9 66 39 59 48 76 1C 8B 02", -0x1C);
 }
 
-using IsScenarioVehicleInfo_fn = bool(*)(uint32_t index);
-static IsScenarioVehicleInfo_fn IsScenarioVehicleInfo;
+static void** g_AmbientModelSetsMgr;
+
+static void FindGameVariables()
+{
+	g_AmbientModelSetsMgr = hook::get_address<void**>(hook::get_pattern("48 8B 0D ? ? ? ? E8 ? ? ? ? 83 F8 FF 75 07", 3));
+}
 
 struct ExtendedScenarioPoint
 {
+	uint32_t iType;
 	uint32_t ModelSetId;
 };
 static std::unordered_map<CScenarioPoint*, ExtendedScenarioPoint> g_Points;
 
-static void SavePoint(CScenarioPoint* point, uint32_t modelSetId)
+static void SavePoint(CScenarioPoint* point, uint32_t scenarioType, uint32_t modelSetId)
 {
-	g_Points[point] = { modelSetId };
+	g_Points[point] = { scenarioType, modelSetId };
 }
 
 static void RemovePoint(CScenarioPoint* point)
@@ -61,18 +72,24 @@ static void RemovePoint(CScenarioPoint* point)
 	g_Points.erase(point);
 }
 
+static void Patch1()
+{
+	spdlog::info("Patch 1...");
+
+	// CScenarioPointRegion::LookUps::ConvertHashesToIndices
+	hook::put(hook::get_pattern("41 BD ? ? ? ? 85 ED 7E 51 4C 8B F3", 2), 0xFFFFFFFF);
+}
+
 static void(*CScenarioPoint_TransformIdsToIndices_orig)(CScenarioPointRegion::sLookUps*, CScenarioPoint*);
 static void CScenarioPoint_TransformIdsToIndices_detour(CScenarioPointRegion::sLookUps* indicesLookups, CScenarioPoint* point)
 {
 	uint32_t scenarioIndex = indicesLookups->TypeNames.Items[point->iType];
-	ExtendedScenarioPoint p;
-	//p.iType = scenarioIndex;
 
 	atArray<uint32_t>* modelSetNames = IsScenarioVehicleInfo(scenarioIndex) ?
 										&indicesLookups->VehicleModelSetNames :
 										&indicesLookups->PedModelSetNames;
 
-	SavePoint(point, modelSetNames->Items[point->ModelSetId]);
+	SavePoint(point, scenarioIndex, modelSetNames->Items[point->ModelSetId]);
 
 	CScenarioPoint_TransformIdsToIndices_orig(indicesLookups, point);
 
@@ -82,8 +99,6 @@ static void CScenarioPoint_TransformIdsToIndices_detour(CScenarioPointRegion::sL
 static void Patch2()
 {
 	spdlog::info("Patch 2...");
-
-	IsScenarioVehicleInfo = (IsScenarioVehicleInfo_fn)hook::pattern("48 83 EC 28 48 8B 15 ? ? ? ? 0F B7 42 10 3B C8 7D 2A").get(1).get<void>();
 
 	// CScenarioPoint::TransformIdsToIndices
 	MH_CreateHook(hook::get_pattern("48 8B 01 44 0F B6 42 ? 0F B6 72 16", -0xF), CScenarioPoint_TransformIdsToIndices_detour, (void**)&CScenarioPoint_TransformIdsToIndices_orig);
@@ -199,10 +214,6 @@ static void Patch5()
 	hook::put(hook::get_pattern("41 81 FF ? ? ? ? 0F 85 ? ? ? ? B9", 3), 0xFFFFFFFF);
 }
 
-using CAmbientModelSetsManager_FindIndexByHash_fn = uint32_t(*)(void* mgr, int type, uint32_t hash);
-static CAmbientModelSetsManager_FindIndexByHash_fn CAmbientModelSetsManager_FindIndexByHash;
-static void** g_AmbientModelSetsMgr;
-
 static bool(*CScenarioPoint_SetModelSet_orig)(CScenarioPoint*, uint32_t*, bool);
 static bool CScenarioPoint_SetModelSet_detour(CScenarioPoint* _this, uint32_t* modelSetHash, bool isVehicle)
 {
@@ -220,7 +231,7 @@ static bool CScenarioPoint_SetModelSet_detour(CScenarioPoint* _this, uint32_t* m
 		}
 	}
 
-	SavePoint(_this, index);
+	SavePoint(_this, 0xDEADBEEF, index);
 	_this->ModelSetId = index;
 
 	return success;
@@ -230,10 +241,7 @@ static void Patch6()
 {
 	spdlog::info("Patch 6...");
 
-	g_AmbientModelSetsMgr = hook::get_address<void**>(hook::get_pattern("48 8B 0D ? ? ? ? E8 ? ? ? ? 83 F8 FF 75 07", 3));
-
-	CAmbientModelSetsManager_FindIndexByHash = (CAmbientModelSetsManager_FindIndexByHash_fn)hook::get_pattern("44 89 44 24 ? 48 83 EC 28 48 63 C2 48 8D 14 80");
-
+	// TODO: remove this hook
 	MH_CreateHook(hook::get_pattern("48 89 5C 24 ? 57 48 83 EC 20 C6 41 16 FF 41 8A C0"), CScenarioPoint_SetModelSet_detour, (void**)&CScenarioPoint_SetModelSet_orig);
 }
 
@@ -298,6 +306,63 @@ static void Patch8()
 	});
 }
 
+static uint32_t GetFinalModelSetHash(uint32_t hash)
+{
+	constexpr uint32_t any_hash = 0xDF3407B5;
+	constexpr uint32_t usepopulation_hash = 0xA7548A2;
+
+	return hash == any_hash ? usepopulation_hash : hash;
+}
+
+static void Patch9()
+{
+	// CScenarioPoint::InitFromSpawnPointDef
+
+
+	static struct : jitasm::Frontend
+	{
+		static int Save(CScenarioPoint* point, char* extensionDefSpawnPoint, void* scenarioInfoMgr)
+		{
+			uint32_t spawnType = *(uint32_t*)(extensionDefSpawnPoint + 0x30);
+			int scenarioType = CScenarioInfoManager_GetScenarioTypeByHash(scenarioInfoMgr, &spawnType, true, true);
+
+			uint32_t pedType = *(uint32_t*)(extensionDefSpawnPoint + 0x34);
+			uint32_t modelSetHash = GetFinalModelSetHash(pedType);
+			int modelSetType = IsScenarioVehicleInfo(scenarioType) ? 2 : 0;
+			uint32_t modelSet = CAmbientModelSetsManager_FindIndexByHash(*g_AmbientModelSetsMgr, modelSetType, modelSetHash);
+
+			spdlog::info("InitFromSpawnPointDef:: SavePoint -> point:{}, spawnType:{:08X}, scenarioType:{:08X}, modelSetHash:{:08X}, modelSet:{:08X}",
+						(void*)point, spawnType, scenarioType, modelSetHash, modelSet);
+			SavePoint(point, scenarioType, modelSet);
+
+			return scenarioType;
+		}
+
+		void InternalMain() override
+		{
+			push(rcx);
+			push(r8);
+			sub(rsp, 0x18);
+
+			mov(r8, rcx);    // third param:  CScenarioInfoManager*
+			//mov(rdx, rdx); // second param: CExtensionDefSpawnPoint*
+			mov(rcx, rbx);   // first param:  CScenarioPoint*
+			mov(rax, (uintptr_t)Save);
+			call(rax);
+
+			add(rsp, 0x18);
+			pop(r8);
+			pop(rcx);
+
+			ret();
+		}
+	} savePointStub;
+
+	auto location = hook::get_pattern("41 B1 01 48 8D 55 20 89 45 20");
+	hook::nop(location, 0x12);
+	hook::call(location, savePointStub.GetCode());
+}
+
 static DWORD WINAPI Main()
 {
 	if (EnableLogging)
@@ -313,6 +378,9 @@ static DWORD WINAPI Main()
 	spdlog::info("Initializing MinHook...");
 	MH_Initialize();
 	
+	FindGameFunctions();
+	FindGameVariables();
+
 	Patch1();
 	Patch2();
 	Patch3();
@@ -321,6 +389,7 @@ static DWORD WINAPI Main()
 	Patch6();
 	Patch7();
 	Patch8();
+	Patch9();
 
 	MH_EnableHook(MH_ALL_HOOKS);
 
