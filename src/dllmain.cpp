@@ -244,7 +244,7 @@ static void Patch6()
 	spdlog::info("Patch 6...");
 
 	// TODO: remove this hook
-	MH_CreateHook(hook::get_pattern("48 89 5C 24 ? 57 48 83 EC 20 C6 41 16 FF 41 8A C0"), CScenarioPoint_SetModelSet_detour, (void**)&CScenarioPoint_SetModelSet_orig);
+	//MH_CreateHook(hook::get_pattern("48 89 5C 24 ? 57 48 83 EC 20 C6 41 16 FF 41 8A C0"), CScenarioPoint_SetModelSet_detour, (void**)&CScenarioPoint_SetModelSet_orig);
 }
 
 static void(*CScenarioPoint_Delete_orig)(CScenarioPoint*);
