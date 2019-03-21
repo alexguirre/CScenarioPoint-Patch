@@ -36,7 +36,7 @@ static void WaitForIntroToFinish()
 
 using IsScenarioVehicleInfo_fn = bool(*)(uint32_t index);
 using CAmbientModelSetsManager_FindIndexByHash_fn = uint32_t(*)(void* mgr, int type, uint32_t hash);
-using CScenarioInfoManager_GetScenarioTypeByHash_fn = int(*)(void* mgr, uint32_t* name, bool a3, bool searchInScenarioTypeGroups);
+using CScenarioInfoManager_GetScenarioTypeByHash_fn = uint32_t(*)(void* mgr, uint32_t* name, bool a3, bool searchInScenarioTypeGroups);
 static IsScenarioVehicleInfo_fn IsScenarioVehicleInfo;
 static CAmbientModelSetsManager_FindIndexByHash_fn CAmbientModelSetsManager_FindIndexByHash;
 static CScenarioInfoManager_GetScenarioTypeByHash_fn CScenarioInfoManager_GetScenarioTypeByHash;
@@ -49,10 +49,12 @@ static void FindGameFunctions()
 }
 
 static void** g_AmbientModelSetsMgr;
+static void** g_ScenarioInfoMgr;
 
 static void FindGameVariables()
 {
 	g_AmbientModelSetsMgr = hook::get_address<void**>(hook::get_pattern("48 8B 0D ? ? ? ? E8 ? ? ? ? 83 F8 FF 75 07", 3));
+	g_ScenarioInfoMgr = hook::get_address<void**>(hook::get_pattern("8B 42 30 48 8B 0D ? ? ? ? 48 8D 54 24 ? 89 44 24 30", 6));
 }
 
 struct ExtendedScenarioPoint
@@ -318,7 +320,6 @@ static void Patch9()
 {
 	// CScenarioPoint::InitFromSpawnPointDef
 
-
 	static struct : jitasm::Frontend
 	{
 		static int Save(CScenarioPoint* point, char* extensionDefSpawnPoint, void* scenarioInfoMgr)
@@ -331,7 +332,7 @@ static void Patch9()
 			int modelSetType = IsScenarioVehicleInfo(scenarioType) ? 2 : 0;
 			uint32_t modelSet = CAmbientModelSetsManager_FindIndexByHash(*g_AmbientModelSetsMgr, modelSetType, modelSetHash);
 
-			spdlog::info("InitFromSpawnPointDef:: SavePoint -> point:{}, spawnType:{:08X}, scenarioType:{:08X}, modelSetHash:{:08X}, modelSet:{:08X}",
+			spdlog::info("InitFromSpawnPointDef:: Save -> point:{}, spawnType:{:08X}, scenarioType:{:08X}, modelSetHash:{:08X}, modelSet:{:08X}",
 						(void*)point, spawnType, scenarioType, modelSetHash, modelSet);
 			SavePoint(point, scenarioType, modelSet);
 
@@ -363,6 +364,86 @@ static void Patch9()
 	hook::call(location, savePointStub.GetCode());
 }
 
+static std::unordered_map<void*, uint32_t> g_SpawnPointsScenarioTypes;
+
+static void(*CSpawnPoint_InitFromDef_orig)(void* spawnPoint, char* extensionDefSpawnPoint);
+static void CSpawnPoint_InitFromDef_detour(void* spawnPoint, char* extensionDefSpawnPoint)
+{
+	uint32_t spawnType = *(uint32_t*)(extensionDefSpawnPoint + 0x30);
+	uint32_t scenarioType = CScenarioInfoManager_GetScenarioTypeByHash(*g_ScenarioInfoMgr, &spawnType, true, true);
+
+	g_SpawnPointsScenarioTypes[spawnPoint] = scenarioType;
+
+	CSpawnPoint_InitFromDef_orig(spawnPoint, extensionDefSpawnPoint);
+}
+
+static void*(*CSpawnPoint_dtor_orig)(void* spawnPoint, char a2);
+static void* CSpawnPoint_dtor_detour(void* spawnPoint, char a2)
+{
+	g_SpawnPointsScenarioTypes.erase(spawnPoint);
+
+	return CSpawnPoint_dtor_orig(spawnPoint, a2);
+}
+
+static void Patch10()
+{
+	auto cspawnPointVTable = hook::get_address<void**>(hook::get_pattern("48 8D 05 ? ? ? ? 41 B9 ? ? ? ? 48 89 02", 3));
+	CSpawnPoint_dtor_orig = (decltype(CSpawnPoint_dtor_orig))cspawnPointVTable[0];
+	CSpawnPoint_InitFromDef_orig = (decltype(CSpawnPoint_InitFromDef_orig))cspawnPointVTable[2];
+
+	cspawnPointVTable[0] = CSpawnPoint_dtor_detour;
+	cspawnPointVTable[2] = CSpawnPoint_InitFromDef_detour;
+
+
+	// CScenarioPoint::ctorWithEntity
+
+	static struct : jitasm::Frontend
+	{
+		static uint32_t Save(CScenarioPoint* point, void* spawnPoint)
+		{
+			uint32_t scenarioType = 0;
+			auto p = g_SpawnPointsScenarioTypes.find(spawnPoint);
+			if (p != g_SpawnPointsScenarioTypes.end())
+			{
+				scenarioType = p->second;
+			}
+
+			uint32_t pedType = *(uint32_t*)((char*)spawnPoint + 0x1C);
+			uint32_t modelSetHash = GetFinalModelSetHash(pedType);
+			int modelSetType = IsScenarioVehicleInfo(scenarioType) ? 2 : 0;
+			uint32_t modelSet = CAmbientModelSetsManager_FindIndexByHash(*g_AmbientModelSetsMgr, modelSetType, modelSetHash);
+
+			spdlog::info("ctorWithEntity:: Save -> point:{}, spawnPoint:{}, scenarioType:{:08X}, modelSetHash:{:08X}, modelSet:{:08X}",
+				(void*)point, spawnPoint, scenarioType, modelSetHash, modelSet);
+			SavePoint(point, scenarioType, modelSet);
+
+			return modelSetHash;
+		}
+
+		void InternalMain() override
+		{
+			push(rcx);
+			push(rdx);
+			sub(rsp, 0x18);
+
+			mov(rdx, rdi); // second param: CSpawnPoint*
+			mov(rcx, rbx); // first param:  CScenarioPoint*
+			mov(rax, (uintptr_t)Save);
+			call(rax);
+
+			add(rsp, 0x18);
+			pop(rdx);
+			pop(rcx);
+
+			ret();
+		}
+	} savePointStub;
+
+	auto location = hook::get_pattern("E8 ? ? ? ? 89 47 1C 0F B6 4B 15");
+	hook::nop(location, 0x5);
+	hook::call(location, savePointStub.GetCode());
+}
+
 static DWORD WINAPI Main()
 {
 	if (EnableLogging)
@@ -390,6 +471,7 @@ static DWORD WINAPI Main()
 	Patch7();
 	Patch8();
 	Patch9();
+	Patch10();
 
 	MH_EnableHook(MH_ALL_HOOKS);
 
