@@ -38,15 +38,18 @@ static void WaitForIntroToFinish()
 using IsScenarioVehicleInfo_fn = bool(*)(uint32_t index);
 using CAmbientModelSetsManager_FindIndexByHash_fn = uint32_t(*)(void* mgr, int type, uint32_t hash);
 using CScenarioInfoManager_GetScenarioTypeByHash_fn = uint32_t(*)(CScenarioInfoManager* mgr, uint32_t* name, bool a3, bool searchInScenarioTypeGroups);
+using CScenarioPoint_CanScenarioSpawn_fn = bool(*)(CScenarioPoint* point, uint32_t scenarioIndex, bool, bool);
 static IsScenarioVehicleInfo_fn IsScenarioVehicleInfo;
 static CAmbientModelSetsManager_FindIndexByHash_fn CAmbientModelSetsManager_FindIndexByHash;
 static CScenarioInfoManager_GetScenarioTypeByHash_fn CScenarioInfoManager_GetScenarioTypeByHash;
+static CScenarioPoint_CanScenarioSpawn_fn CScenarioPoint_CanScenarioSpawn;
 
 static void FindGameFunctions()
 {
 	IsScenarioVehicleInfo = (IsScenarioVehicleInfo_fn)hook::pattern("48 83 EC 28 48 8B 15 ? ? ? ? 0F B7 42 10 3B C8 7D 2A").get(1).get<void>();
 	CAmbientModelSetsManager_FindIndexByHash = (CAmbientModelSetsManager_FindIndexByHash_fn)hook::get_pattern("44 89 44 24 ? 48 83 EC 28 48 63 C2 48 8D 14 80");
 	CScenarioInfoManager_GetScenarioTypeByHash = (CScenarioInfoManager_GetScenarioTypeByHash_fn)hook::get_pattern("48 8B F9 66 39 59 48 76 1C 8B 02", -0x1C);
+	CScenarioPoint_CanScenarioSpawn = (CScenarioPoint_CanScenarioSpawn_fn)hook::get_pattern("48 85 C9 74 06 0F B6 51 16 EB 05", -0x2D);
 }
 
 static void** g_AmbientModelSetsMgr;
@@ -119,7 +122,7 @@ static void Patch4()
 {
 	spdlog::info("Patch 4...");
 
-	// CScenarioPoint::CanSpawn
+	// CScenarioPoint::CanScenarioSpawn
 	static struct : jitasm::Frontend
 	{
 		static int GetModelSetIndex(CScenarioPoint* point)
@@ -638,6 +641,19 @@ static void Patch13()
 	MH_CreateHook(pattern.get(1).get<void>(), CScenarioPoint_GetScenarioTypeIndex_detour, (void**)&CScenarioPoint_GetScenarioTypeIndex_orig);
 }
 
+static bool(*CScenarioPoint_CanSpawn_orig)(CScenarioPoint*, bool, bool, uint32_t);
+static bool CScenarioPoint_CanSpawn_detour(CScenarioPoint* _this, bool a2, bool a3, uint32_t subType)
+{
+	return CScenarioPoint_CanScenarioSpawn(_this, GetScenarioTypeIndex(_this, subType), a2, a3);
+}
+
+static void Patch14()
+{
+	spdlog::info("Patch 14...");
+
+	MH_CreateHook(hook::get_pattern("40 53 48 83 EC 20 48 8B 05 ? ? ? ? 44 8A DA"), CScenarioPoint_CanSpawn_detour, (void**)&CScenarioPoint_CanSpawn_orig);
+}
+
 static DWORD WINAPI Main()
 {
 	if (EnableLogging)
@@ -669,6 +685,7 @@ static DWORD WINAPI Main()
 	Patch11();
 	Patch12();
 	Patch13();
+	Patch14();
 
 	MH_EnableHook(MH_ALL_HOOKS);
 
