@@ -95,11 +95,12 @@ static void CScenarioPoint_TransformIdsToIndices_detour(CScenarioPointRegion::sL
 										&indicesLookups->VehicleModelSetNames :
 										&indicesLookups->PedModelSetNames;
 
+	spdlog::info(" TransformIdsToIndices:: detour -> point:{}, scenarioType:{:08X}, modelSet:{:08X}, modelSetId:{:X}, modelSetNamesCount:{:X}, modelSetNamesSize:{:X}",
+		(void*)point, scenarioIndex, modelSetNames->Items[point->ModelSetId], point->ModelSetId, modelSetNames->Count, modelSetNames->Size);
+
 	SavePoint(point, scenarioIndex, modelSetNames->Items[point->ModelSetId]);
 
 	CScenarioPoint_TransformIdsToIndices_orig(indicesLookups, point);
-
-	spdlog::info(" TransformIdsToIndices:: detour -> point:{}, scenarioType:{:08X}, modelSet:{:08X}", (void*)point, scenarioIndex, modelSetNames->Items[point->ModelSetId]);
 }
 
 static void Patch2()
@@ -715,6 +716,35 @@ static void Patch16()
 	}
 }
 
+static void Patch17()
+{
+	spdlog::info("Patch 17...");
+
+	// CTaskUseScenario::ctor
+
+	static struct : jitasm::Frontend
+	{
+		void InternalMain() override
+		{
+			sub(rsp, 0x8);
+
+			mov(rcx, rax); // param: CScenarioPoint*
+			mov(rax, (uintptr_t)GetSavedScenarioType);
+			call(rax);
+
+			mov(dword_ptr[rdi + 0x18C], eax);
+
+			add(rsp, 0x8);
+
+			ret();
+		}
+	} getScenarioTypeStub;
+
+	auto location = hook::get_pattern("0F B6 40 15 89 87");
+	hook::nop(location, 0xA);
+	hook::call(location, getScenarioTypeStub.GetCode());
+}
+
 static DWORD WINAPI Main()
 {
 	if (EnableLogging)
@@ -749,6 +779,7 @@ static DWORD WINAPI Main()
 	Patch14();
 	Patch15();
 	Patch16();
+	Patch17();
 
 	MH_EnableHook(MH_ALL_HOOKS);
 
