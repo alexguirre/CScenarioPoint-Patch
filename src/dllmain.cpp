@@ -654,6 +654,34 @@ static void Patch14()
 	MH_CreateHook(hook::get_pattern("40 53 48 83 EC 20 48 8B 05 ? ? ? ? 44 8A DA"), CScenarioPoint_CanSpawn_detour, (void**)&CScenarioPoint_CanSpawn_orig);
 }
 
+static void Patch15()
+{
+	spdlog::info("Patch 15...");
+
+	static struct : jitasm::Frontend
+	{
+		void InternalMain() override
+		{
+			mov(rbx, rcx);
+
+			sub(rsp, 0x8);
+
+			// rcx already is CScenarioPoint*
+			mov(rax, (uintptr_t)GetSavedScenarioType);
+			call(rax);
+			mov(ecx, eax);
+
+			add(rsp, 0x8);
+			
+			ret();
+		}
+	} getScenarioTypeStub;
+
+	auto location = hook::get_pattern("48 8B D9 0F B6 49 15 40 8A EA");
+	hook::nop(location, 0x7);
+	hook::call(location, getScenarioTypeStub.GetCode());
+}
+
 static DWORD WINAPI Main()
 {
 	if (EnableLogging)
@@ -686,6 +714,7 @@ static DWORD WINAPI Main()
 	Patch12();
 	Patch13();
 	Patch14();
+	Patch15();
 
 	MH_EnableHook(MH_ALL_HOOKS);
 
