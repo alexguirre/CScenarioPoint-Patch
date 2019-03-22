@@ -507,6 +507,7 @@ static uint32_t GetSavedScenarioType(CScenarioPoint* point)
 	}
 	else
 	{
+		spdlog::warn("GetSavedScenarioType:: POINT {} NOT FOUND IN MAP", (void*)point);
 		return point->iType;
 	}
 }
@@ -745,6 +746,40 @@ static void Patch17()
 	hook::call(location, getScenarioTypeStub.GetCode());
 }
 
+static void Patch18()
+{
+	spdlog::info("Patch 18...");
+
+	static struct : jitasm::Frontend
+	{
+		static uint32_t GetScenarioType(uint64_t index, CScenarioPoint* points)
+		{
+			CScenarioPoint* p = &points[index];
+			return GetSavedScenarioType(p);
+		}
+
+		void InternalMain() override
+		{
+			sub(rsp, 0x8);
+
+			//mov(rdx, rdx); // second param: CScenarioPoint array
+			mov(rcx, rdi);   // first param: index
+			mov(rax, (uintptr_t)GetScenarioType);
+			call(rax);
+
+			mov(ecx, eax);
+
+			add(rsp, 0x8);
+
+			ret();
+		}
+	} getScenarioTypeStub;
+
+	auto location = hook::get_pattern("0F B6 4C 17 ? E8");
+	hook::nop(location, 0x5);
+	hook::call(location, getScenarioTypeStub.GetCode());
+}
+
 static DWORD WINAPI Main()
 {
 	if (EnableLogging)
@@ -780,6 +815,7 @@ static DWORD WINAPI Main()
 	Patch15();
 	Patch16();
 	Patch17();
+	Patch18();
 
 	MH_EnableHook(MH_ALL_HOOKS);
 
