@@ -703,10 +703,16 @@ static void Patch16()
 			ret();
 		}
 	} getScenarioTypeStub;
-
-	auto location = hook::get_pattern("0F B6 49 15 85 C9 78 48");
-	hook::nop(location, 0x6);
-	hook::call(location, getScenarioTypeStub.GetCode());
+	{
+		auto location = hook::get_pattern("0F B6 49 15 85 C9 78 48");
+		hook::nop(location, 0x6);
+		hook::call(location, getScenarioTypeStub.GetCode());
+	}
+	{
+		auto location = hook::get_pattern("0F B6 49 15 85 C9 0F 88");
+		hook::nop(location, 0x6);
+		hook::call(location, getScenarioTypeStub.GetCode());
+	}
 }
 
 static DWORD WINAPI Main()
