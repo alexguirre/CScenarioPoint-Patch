@@ -682,6 +682,33 @@ static void Patch15()
 	hook::call(location, getScenarioTypeStub.GetCode());
 }
 
+static void Patch16()
+{
+	spdlog::info("Patch 16...");
+
+	static struct : jitasm::Frontend
+	{
+		void InternalMain() override
+		{
+			sub(rsp, 0x8);
+
+			// rcx already is CScenarioPoint*
+			mov(rax, (uintptr_t)GetSavedScenarioType);
+			call(rax);
+			mov(ecx, eax);
+
+			add(rsp, 0x8);
+
+			test(ecx, ecx);
+			ret();
+		}
+	} getScenarioTypeStub;
+
+	auto location = hook::get_pattern("0F B6 49 15 85 C9 78 48");
+	hook::nop(location, 0x6);
+	hook::call(location, getScenarioTypeStub.GetCode());
+}
+
 static DWORD WINAPI Main()
 {
 	if (EnableLogging)
@@ -715,6 +742,7 @@ static DWORD WINAPI Main()
 	Patch13();
 	Patch14();
 	Patch15();
+	Patch16();
 
 	MH_EnableHook(MH_ALL_HOOKS);
 
