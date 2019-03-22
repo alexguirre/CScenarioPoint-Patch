@@ -78,6 +78,34 @@ static void RemovePoint(CScenarioPoint* point)
 	g_Points.erase(point);
 }
 
+static uint32_t GetSavedModelSetId(CScenarioPoint* point)
+{
+	auto p = g_Points.find(point);
+	if (p != g_Points.end())
+	{
+		return p->second.ModelSetId;
+	}
+	else
+	{
+		spdlog::warn("GetSavedModelSetId:: POINT {} NOT FOUND IN MAP", (void*)point);
+		return point->ModelSetId;
+	}
+}
+
+static uint32_t GetSavedScenarioType(CScenarioPoint* point)
+{
+	auto p = g_Points.find(point);
+	if (p != g_Points.end())
+	{
+		return p->second.iType;
+	}
+	else
+	{
+		spdlog::warn("GetSavedScenarioType:: POINT {} NOT FOUND IN MAP", (void*)point);
+		return point->iType;
+	}
+}
+
 static void Patch1()
 {
 	spdlog::info("Patch 1...");
@@ -133,15 +161,7 @@ static void Patch4()
 				return 0xFFFFFFFF;
 			}
 
-			auto p = g_Points.find(point);
-			if (p != g_Points.end())
-			{
-				return p->second.ModelSetId;
-			}
-			else
-			{
-				return point->ModelSetId;
-			}
+			return GetSavedModelSetId(point);
 		}
 
 		void InternalMain() override
@@ -182,15 +202,7 @@ static void Patch5()
 				return 0xFFFFFFFF;
 			}
 
-			auto p = g_Points.find(point);
-			if (p != g_Points.end())
-			{
-				return p->second.ModelSetId;
-			}
-			else
-			{
-				return point->ModelSetId;
-			}
+			return GetSavedModelSetId(point);
 		}
 
 		void InternalMain() override
@@ -273,26 +285,13 @@ static void Patch8()
 
 	static struct : jitasm::Frontend
 	{
-		static int GetModelSetIndex(CScenarioPoint* point)
-		{
-			auto p = g_Points.find(point);
-			if (p != g_Points.end())
-			{
-				return p->second.ModelSetId;
-			}
-			else
-			{
-				return point->ModelSetId;
-			}
-		}
-
 		void InternalMain() override
 		{
 			push(rcx);
 			sub(rsp, 0x10);
 
 			mov(rcx, rdi); // param: CScenarioPoint*
-			mov(rax, (uintptr_t)GetModelSetIndex);
+			mov(rax, (uintptr_t)GetSavedModelSetId);
 			call(rax);
 
 			add(rsp, 0x10);
@@ -496,20 +495,6 @@ static void Patch11()
 
 	MH_CreateHook(hook::get_pattern("48 83 EC 20 8B 41 08 33 FF 48 8B F2", -0xB), CSpawnPointOverrideExtension_OverrideScenarioPoint_detour,
 		(void**)&CSpawnPointOverrideExtension_OverrideScenarioPoint_orig);
-}
-
-static uint32_t GetSavedScenarioType(CScenarioPoint* point)
-{
-	auto p = g_Points.find(point);
-	if (p != g_Points.end())
-	{
-		return p->second.iType;
-	}
-	else
-	{
-		spdlog::warn("GetSavedScenarioType:: POINT {} NOT FOUND IN MAP", (void*)point);
-		return point->iType;
-	}
 }
 
 static void Patch12()
@@ -780,6 +765,36 @@ static void Patch18()
 	hook::call(location, getScenarioTypeStub.GetCode());
 }
 
+static void Patch19()
+{
+	spdlog::info("Patch 19...");
+
+	static struct : jitasm::Frontend
+	{
+		static bool IsVehicleInfo(CScenarioPoint* point)
+		{
+			return IsScenarioVehicleInfo(GetSavedScenarioType(point));
+		}
+
+		void InternalMain() override
+		{
+			sub(rsp, 0x8);
+
+			mov(rcx, rdx);   // first param: index
+			mov(rax, (uintptr_t)IsVehicleInfo);
+			call(rax);
+
+			add(rsp, 0x8);
+
+			ret();
+		}
+	} isVehicleInfoStub;
+
+	auto location = hook::get_pattern("0F B6 4A 15 E8 ? ? ? ? 84 C0");
+	hook::nop(location, 0x9);
+	hook::call(location, isVehicleInfoStub.GetCode());
+}
+
 static DWORD WINAPI Main()
 {
 	if (EnableLogging)
@@ -816,6 +831,7 @@ static DWORD WINAPI Main()
 	Patch16();
 	Patch17();
 	Patch18();
+	Patch19();
 
 	MH_EnableHook(MH_ALL_HOOKS);
 
