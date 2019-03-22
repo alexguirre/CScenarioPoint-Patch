@@ -780,7 +780,7 @@ static void Patch19()
 		{
 			sub(rsp, 0x8);
 
-			mov(rcx, rdx);   // first param: index
+			mov(rcx, rdx);   // first param: CScenarioPoint*
 			mov(rax, (uintptr_t)IsVehicleInfo);
 			call(rax);
 
@@ -793,6 +793,47 @@ static void Patch19()
 	auto location = hook::get_pattern("0F B6 4A 15 E8 ? ? ? ? 84 C0");
 	hook::nop(location, 0x9);
 	hook::call(location, isVehicleInfoStub.GetCode());
+}
+
+static void Patch20()
+{
+	spdlog::info("Patch 20...");
+
+	static struct : jitasm::Frontend
+	{
+		static CScenarioInfoManager* GetMgr()
+		{
+			return *g_ScenarioInfoMgr;
+		}
+
+		void InternalMain() override
+		{
+			push(r8);
+			push(r9);
+			sub(rsp, 0x18);
+
+			mov(rcx, rdx);   // first param: CScenarioPoint*
+			mov(rax, (uintptr_t)GetSavedScenarioType);
+			call(rax);
+			mov(r9d, eax); // save return value
+
+			mov(rax, (uintptr_t)GetMgr);
+			call(rax);
+
+			mov(rdx, rax); // store g_ScenarioInfoMgr
+			mov(eax, r9d); // store the scenario type
+
+			add(rsp, 0x18);
+			pop(r9);
+			pop(r8);
+
+			ret();
+		}
+	} getScenarioTypeStub;
+
+	auto location = hook::get_pattern("0F B6 42 15 48 8B 15 ? ? ? ? 0F B7 4A 10");
+	hook::nop(location, 0xB);
+	hook::call(location, getScenarioTypeStub.GetCode());
 }
 
 static DWORD WINAPI Main()
@@ -832,6 +873,7 @@ static DWORD WINAPI Main()
 	Patch17();
 	Patch18();
 	Patch19();
+	Patch20();
 
 	MH_EnableHook(MH_ALL_HOOKS);
 
