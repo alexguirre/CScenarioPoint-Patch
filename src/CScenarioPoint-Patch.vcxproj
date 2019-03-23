@@ -97,7 +97,6 @@
     <ClCompile Include="dllmain.cpp" />
     <ClCompile Include="Hooking.cpp" />
     <ClCompile Include="Hooking.Patterns.cpp" />
-    <ClCompile Include="UsingAllocator.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="atArray.h" />
@@ -106,10 +105,8 @@
     <ClInclude Include="CScenarioPoint.h" />
     <ClInclude Include="CScenarioPointRegion.h" />
     <ClInclude Include="CScenarioTypeGroup.h" />
-    <ClInclude Include="Hashing.h" />
     <ClInclude Include="Hooking.h" />
     <ClInclude Include="Hooking.Patterns.h" />
-    <ClInclude Include="UsingAllocator.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

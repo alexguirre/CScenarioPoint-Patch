@@ -11,29 +11,7 @@
 #include <MinHook.h>
 #include <jitasm.h>
 
-constexpr bool EnableLogging = true;
-
-static void WaitForWindow()
-{
-	spdlog::info("Waiting for window...");
-	while (!FindWindow("grcWindow", NULL))
-	{
-		Sleep(100);
-	}
-}
-
-static void WaitForIntroToFinish()
-{
-	uintptr_t addr = (uintptr_t)hook::get_pattern("44 39 3D ? ? ? ? 75 09 83 BB ? ? ? ? ? 7D 24");
-	addr = addr + *(int*)(addr + 3) + 7;
-	unsigned int* gameState = (unsigned int*)addr;
-
-	spdlog::info("Waiting for intro to finish...");
-	while (*gameState == 0 || *gameState == 1)
-	{
-		Sleep(100);
-	}
-}
+static constexpr bool EnableLogging = true;
 
 using IsScenarioVehicleInfo_fn = bool(*)(uint32_t index);
 using CAmbientModelSetsManager_FindIndexByHash_fn = uint32_t(*)(void* mgr, int type, uint32_t hash);
@@ -887,9 +865,6 @@ static DWORD WINAPI Main()
 	Patch20();
 
 	MH_EnableHook(MH_ALL_HOOKS);
-
-	//WaitForWindow();
-	//WaitForIntroToFinish();
 
 	spdlog::info("End");
 	return 1;

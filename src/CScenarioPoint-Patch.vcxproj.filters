@@ -3,14 +3,11 @@
   <ItemGroup>
     <ClCompile Include="dllmain.cpp" />
     <ClCompile Include="Hooking.Patterns.cpp" />
-    <ClCompile Include="UsingAllocator.cpp" />
     <ClCompile Include="Hooking.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="Hooking.Patterns.h" />
-    <ClInclude Include="Hashing.h" />
     <ClInclude Include="Hooking.h" />
-    <ClInclude Include="UsingAllocator.h" />
     <ClInclude Include="CScenarioPoint.h" />
     <ClInclude Include="CScenarioPointRegion.h" />
     <ClInclude Include="atArray.h" />
