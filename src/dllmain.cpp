@@ -75,7 +75,12 @@ static void SavePoint(CScenarioPoint* point, uint32_t scenarioType, uint32_t mod
 
 static void RemovePoint(CScenarioPoint* point)
 {
-	g_Points.erase(point);
+	if (g_Points.erase(point) == 0)
+	{
+		spdlog::warn("RemovePoint:: POINT {} NOT FOUND IN MAP ({}, {}, {})",
+			(void*)point, point->vPositionAndDirection[0], point->vPositionAndDirection[1],
+			point->vPositionAndDirection[2]);
+	}
 }
 
 static uint32_t GetSavedModelSetId(CScenarioPoint* point)
@@ -87,7 +92,9 @@ static uint32_t GetSavedModelSetId(CScenarioPoint* point)
 	}
 	else
 	{
-		spdlog::warn("GetSavedModelSetId:: POINT {} NOT FOUND IN MAP", (void*)point);
+		spdlog::warn("GetSavedModelSetId:: POINT {} NOT FOUND IN MAP ({}, {}, {})",
+			(void*)point, point->vPositionAndDirection[0], point->vPositionAndDirection[1],
+			point->vPositionAndDirection[2]);
 		return point->ModelSetId;
 	}
 }
@@ -101,7 +108,9 @@ static uint32_t GetSavedScenarioType(CScenarioPoint* point)
 	}
 	else
 	{
-		spdlog::warn("GetSavedScenarioType:: POINT {} NOT FOUND IN MAP", (void*)point);
+		spdlog::warn("GetSavedScenarioType:: POINT {} NOT FOUND IN MAP ({}, {}, {})",
+			(void*)point, point->vPositionAndDirection[0], point->vPositionAndDirection[1],
+			point->vPositionAndDirection[2]);
 		return point->iType;
 	}
 }
@@ -123,8 +132,8 @@ static void CScenarioPoint_TransformIdsToIndices_detour(CScenarioPointRegion::sL
 										&indicesLookups->VehicleModelSetNames :
 										&indicesLookups->PedModelSetNames;
 
-	spdlog::info(" TransformIdsToIndices:: detour -> point:{}, scenarioType:{:08X}, modelSet:{:08X}, modelSetId:{:X}, modelSetNamesCount:{:X}, modelSetNamesSize:{:X}",
-		(void*)point, scenarioIndex, modelSetNames->Items[point->ModelSetId], point->ModelSetId, modelSetNames->Count, modelSetNames->Size);
+	//spdlog::info(" TransformIdsToIndices:: detour -> point:{}, scenarioType:{:08X}, modelSet:{:08X}, modelSetId:{:X}, modelSetNamesCount:{:X}, modelSetNamesSize:{:X}",
+	//	(void*)point, scenarioIndex, modelSetNames->Items[point->ModelSetId], point->ModelSetId, modelSetNames->Count, modelSetNames->Size);
 
 	SavePoint(point, scenarioIndex, modelSetNames->Items[point->ModelSetId]);
 
@@ -338,8 +347,8 @@ static void Patch9()
 			int modelSetType = IsScenarioVehicleInfo(scenarioType) ? 2 : 0;
 			uint32_t modelSet = CAmbientModelSetsManager_FindIndexByHash(*g_AmbientModelSetsMgr, modelSetType, modelSetHash);
 
-			spdlog::info("InitFromSpawnPointDef:: Save -> point:{}, spawnType:{:08X}, scenarioType:{:08X}, modelSetHash:{:08X}, modelSet:{:08X}",
-						(void*)point, spawnType, scenarioType, modelSetHash, modelSet);
+			//spdlog::info("InitFromSpawnPointDef:: Save -> point:{}, spawnType:{:08X}, scenarioType:{:08X}, modelSetHash:{:08X}, modelSet:{:08X}",
+			//			(void*)point, spawnType, scenarioType, modelSetHash, modelSet);
 			SavePoint(point, scenarioType, modelSet);
 
 			return scenarioType;
@@ -421,8 +430,8 @@ static void Patch10()
 			int modelSetType = IsScenarioVehicleInfo(scenarioType) ? 2 : 0;
 			uint32_t modelSet = CAmbientModelSetsManager_FindIndexByHash(*g_AmbientModelSetsMgr, modelSetType, modelSetHash);
 
-			spdlog::info("ctorWithEntity:: Save -> point:{}, spawnPoint:{}, scenarioType:{:08X}, modelSetHash:{:08X}, modelSet:{:08X}",
-				(void*)point, spawnPoint, scenarioType, modelSetHash, modelSet);
+			//spdlog::info("ctorWithEntity:: Save -> point:{}, spawnPoint:{}, scenarioType:{:08X}, modelSetHash:{:08X}, modelSet:{:08X}",
+			//	(void*)point, spawnPoint, scenarioType, modelSetHash, modelSet);
 			SavePoint(point, scenarioType, modelSet);
 
 			return modelSetHash;
@@ -480,8 +489,8 @@ static void CSpawnPointOverrideExtension_OverrideScenarioPoint_detour(char* spaw
 		}
 
 
-		spdlog::info("OverrideScenarioPoint:: detour -> spawnPointOverrideExtension:{}, point:{}, iType:{:08X}, new_iType:{:08X}, ModelSetId:{:08X}, new_ModelSetId:{:08X}",
-			(void*)spawnPointOverrideExtension, (void*)point, origiType, p->second.iType, origModelSetId, p->second.ModelSetId);
+		//spdlog::info("OverrideScenarioPoint:: detour -> spawnPointOverrideExtension:{}, point:{}, iType:{:08X}, new_iType:{:08X}, ModelSetId:{:08X}, new_ModelSetId:{:08X}",
+		//	(void*)spawnPointOverrideExtension, (void*)point, origiType, p->second.iType, origModelSetId, p->second.ModelSetId);
 	}
 
 	CSpawnPointOverrideExtension_OverrideScenarioPoint_orig(spawnPointOverrideExtension, point);
@@ -728,7 +737,8 @@ static void Patch17()
 
 	auto location = hook::get_pattern("0F B6 40 15 89 87");
 	hook::nop(location, 0xA);
-	hook::call(location, getScenarioTypeStub.GetCode());
+	// call_rcx because rax contains the CScenarioPoint*
+	hook::call_rcx(location, getScenarioTypeStub.GetCode());
 }
 
 static void Patch18()
@@ -737,8 +747,9 @@ static void Patch18()
 
 	static struct : jitasm::Frontend
 	{
-		static uint32_t GetScenarioType(uint64_t index, CScenarioPoint* points)
+		static uint32_t GetScenarioType(uint64_t offset, CScenarioPoint* points)
 		{
+			uint64_t index = (offset / sizeof(CScenarioPoint));
 			CScenarioPoint* p = &points[index];
 			return GetSavedScenarioType(p);
 		}
@@ -748,7 +759,7 @@ static void Patch18()
 			sub(rsp, 0x8);
 
 			//mov(rdx, rdx); // second param: CScenarioPoint array
-			mov(rcx, rdi);   // first param: index
+			mov(rcx, rdi);   // first param: offset
 			mov(rax, (uintptr_t)GetScenarioType);
 			call(rax);
 
