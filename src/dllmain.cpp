@@ -989,6 +989,39 @@ static void Patch25()
 		hook::call_rcx(location, getModelSetIndexStub.GetCode());
 	});
 }
+
+static void Patch26()
+{
+	spdlog::info("Patch 26...");
+
+	// CScenarioPoint::TryCreateCargen
+	static struct : jitasm::Frontend
+	{
+		void InternalMain() override
+		{
+			push(r8);
+			push(r9);
+			sub(rsp, 0x18);
+
+			// rcx already has CScenarioPoint*
+			mov(rax, (uintptr_t)GetSavedScenarioType);
+			call(rax);
+			mov(esi, eax);
+
+			add(rsp, 0x18);
+			pop(r9);
+			pop(r8);
+
+			test(esi, esi);
+			ret();
+		}
+	} getScenarioTypeStub;
+
+	auto location = hook::get_pattern("0F B6 71 15 85 F6 0F 88");
+	hook::nop(location, 0x6);
+	hook::call(location, getScenarioTypeStub.GetCode());
+}
+
 static DWORD WINAPI Main()
 {
 	if (EnableLogging)
@@ -1032,6 +1065,7 @@ static DWORD WINAPI Main()
 	Patch23();
 	Patch24();
 	Patch25();
+	Patch26();
 
 	MH_EnableHook(MH_ALL_HOOKS);
 
