@@ -734,7 +734,9 @@ static void Patch18()
 
 		void InternalMain() override
 		{
-			sub(rsp, 0x8);
+			push(r8);
+			push(r9);
+			sub(rsp, 0x18);
 
 			//mov(rdx, rdx); // second param: CScenarioPoint array
 			mov(rcx, rdi);   // first param: offset
@@ -743,7 +745,9 @@ static void Patch18()
 
 			mov(ecx, eax);
 
-			add(rsp, 0x8);
+			add(rsp, 0x18);
+			pop(r9);
+			pop(r8);
 
 			ret();
 		}
