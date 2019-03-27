@@ -1020,10 +1020,51 @@ static void Patch26()
 			ret();
 		}
 	} getScenarioTypeStub;
+	{
+		auto location = hook::get_pattern("0F B6 71 15 85 F6 0F 88");
+		hook::nop(location, 0x6);
+		hook::call(location, getScenarioTypeStub.GetCode());
+	}
 
-	auto location = hook::get_pattern("0F B6 71 15 85 F6 0F 88");
-	hook::nop(location, 0x6);
-	hook::call(location, getScenarioTypeStub.GetCode());
+	static struct : jitasm::Frontend
+	{
+		void InternalMain() override
+		{
+			push(r8);
+			push(r9);
+			sub(rsp, 0x18);
+
+			mov(rcx, rbx); // param: CScenarioPoint*
+			mov(rax, (uintptr_t)GetSavedModelSetId);
+			call(rax);
+			mov(edx, eax);
+
+			add(rsp, 0x18);
+			pop(r9);
+			pop(r8);
+
+			mov(rcx, rdi);
+			ret();
+		}
+	} getModelSetIdStub;
+	{
+		auto location = hook::get_pattern("0F B6 53 16 48 8B CF E8");
+		hook::nop(location, 0x7);
+		hook::call(location, getModelSetIdStub.GetCode());
+	}
+}
+
+
+static void Patch27()
+{
+	spdlog::info("Patch 27...");
+
+	hook::pattern pattern("81 FA ? ? ? ? 74 14 48 8B 05");
+	pattern.count(2);
+	pattern.for_each_result([](const hook::pattern_match& match)
+	{
+		hook::put(match.get<void>(2), 0xFFFFFFFF);
+	});
 }
 
 static DWORD WINAPI Main()
@@ -1070,6 +1111,7 @@ static DWORD WINAPI Main()
 	Patch24();
 	Patch25();
 	Patch26();
+	Patch27();
 
 	MH_EnableHook(MH_ALL_HOOKS);
 
