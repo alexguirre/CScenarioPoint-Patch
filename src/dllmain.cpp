@@ -1198,7 +1198,6 @@ static void Patch34()
 
 	static struct : jitasm::Frontend
 	{
-		static uint32_t wrap(CCargen* p) { spdlog::info("Patch34"); spdlog::default_logger()->flush(); return GetSavedCargenScenarioType(p); }
 		void InternalMain() override
 		{
 			push(r8);
@@ -1206,7 +1205,7 @@ static void Patch34()
 			sub(rsp, 0x18);
 
 			mov(rcx, rsi); // param: CCargen*
-			mov(rax, (uintptr_t)wrap);
+			mov(rax, (uintptr_t)GetSavedCargenScenarioType);
 			call(rax);
 			mov(esi, eax);
 
@@ -1220,6 +1219,33 @@ static void Patch34()
 	} getScenarioTypeStub;
 
 	auto location = hook::get_pattern("0F B6 76 39 48 8D 54 24 ? 8B CE");
+	hook::nop(location, 0x7);
+	hook::call(location, getScenarioTypeStub.GetCode());
+}
+
+static void Patch35()
+{
+	spdlog::info("Patch 35...");
+
+	static struct : jitasm::Frontend
+	{
+		void InternalMain() override
+		{
+			sub(rsp, 0x8);
+
+			mov(rcx, rbx); // param: CCargen*
+			mov(rax, (uintptr_t)GetSavedCargenScenarioType);
+			call(rax);
+			mov(edi, eax);
+
+			add(rsp, 0x8);
+
+			xor(r9d, r9d);
+			ret();
+		}
+	} getScenarioTypeStub;
+
+	auto location = hook::get_pattern("0F B6 7B 39 45 33 C9");
 	hook::nop(location, 0x7);
 	hook::call(location, getScenarioTypeStub.GetCode());
 }
@@ -1276,6 +1302,7 @@ static DWORD WINAPI Main()
 	Patch32();
 	Patch33();
 	Patch34();
+	Patch35();
 
 	MH_EnableHook(MH_ALL_HOOKS);
 
