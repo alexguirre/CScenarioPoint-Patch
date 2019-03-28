@@ -14,5 +14,6 @@
     <ClInclude Include="CScenarioInfo.h" />
     <ClInclude Include="CScenarioInfoManager.h" />
     <ClInclude Include="CScenarioTypeGroup.h" />
+    <ClInclude Include="CCargen.h" />
   </ItemGroup>
 </Project>

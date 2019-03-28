@@ -7,6 +7,7 @@
 #include "CScenarioPoint.h"
 #include "CScenarioPointRegion.h"
 #include "CScenarioInfoManager.h"
+#include "CCargen.h"
 #include <unordered_map>
 #include <MinHook.h>
 #include <jitasm.h>
@@ -1054,7 +1055,6 @@ static void Patch26()
 	}
 }
 
-
 static void Patch27()
 {
 	spdlog::info("Patch 27...");
@@ -1065,6 +1065,131 @@ static void Patch27()
 	{
 		hook::put(match.get<void>(2), 0xFFFFFFFF);
 	});
+}
+
+static void Patch28()
+{
+	spdlog::info("Patch 28...");
+
+	// CreateCargen
+	hook::put(hook::get_pattern("81 FD ? ? ? ? 41 0F 95 C6", 2), 0xFFFFFFFF);
+}
+
+struct ExtendedCargen
+{
+	uint32_t ScenarioType;
+};
+static std::unordered_map<CCargen*, ExtendedCargen> g_Cargens;
+
+static void SaveCargen(CCargen* cargen, uint32_t scenarioType)
+{
+	g_Cargens[cargen] = { scenarioType };
+}
+
+static void RemoveCargen(CCargen* cargen)
+{
+	if (g_Cargens.erase(cargen) == 0)
+	{
+		spdlog::warn("RemoveCargen:: CARGEN {} NOT FOUND IN MAP ({}, {}, {})",
+			(void*)cargen, cargen->Position[0], cargen->Position[1],
+			cargen->Position[2]);
+	}
+}
+
+static uint32_t GetSavedCargenScenarioType(CCargen* cargen)
+{
+	auto p = g_Cargens.find(cargen);
+	if (p != g_Cargens.end())
+	{
+		return p->second.ScenarioType;
+	}
+	else
+	{
+		spdlog::warn("GetSavedScenarioType:: CARGEN {} NOT FOUND IN MAP ({}, {}, {})",
+			(void*)cargen, cargen->Position[0], cargen->Position[1],
+			cargen->Position[2]);
+		return cargen->ScenarioType;
+	}
+}
+
+static void(*CCargen_Initialize_orig)(CCargen* cargen, int a2, int a3, int a4, float a5, float a6, uint32_t a7, int a8, int a9, int a10, int a11, int a12,
+									  int a13, int a14, int a15, int a16, int a17, int scenarioType, char a19, uint32_t* a20, char a21, char a22, char a23, char a24);
+static void CCargen_Initialize_detour(CCargen* cargen, int a2, int a3, int a4, float a5, float a6, uint32_t a7, int a8, int a9, int a10, int a11, int a12,
+									  int a13, int a14, int a15, int a16, int a17, int scenarioType, char a19, uint32_t* a20, char a21, char a22, char a23, char a24)
+{
+	SaveCargen(cargen, scenarioType);
+
+	CCargen_Initialize_orig(cargen, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15, a16, a17, scenarioType, a19, a20, a21, a22, a23, a24);
+}
+
+static void Patch29()
+{
+	spdlog::info("Patch 29...");
+
+	// CCargen::Initialize
+	MH_CreateHook(hook::get_pattern("41 57 48 8B EC 48 83 EC 30 80 61 3B 7F", -0x12), CCargen_Initialize_detour, (void**)&CCargen_Initialize_orig);
+}
+
+static void(*DeleteCargenFromPool_orig)(void* pool, CCargen* cargen);
+static void DeleteCargenFromPool_detour(void* pool, CCargen* cargen)
+{
+	RemoveCargen(cargen);
+
+	DeleteCargenFromPool_orig(pool, cargen);
+}
+
+static void Patch30()
+{
+	spdlog::info("Patch 30...");
+
+	// CCargen::Initialize
+	MH_CreateHook(hook::get_pattern("48 85 D2 74 7E 48 89 5C 24 ? 48 89 6C 24"), DeleteCargenFromPool_detour, (void**)&DeleteCargenFromPool_orig);
+}
+
+static void Patch31()
+{
+	spdlog::info("Patch 31...");
+
+	// CREATE_SCRIPT_VEHICLE_GENERATOR
+	hook::put(hook::get_pattern("C7 84 24 ? ? ? ? ? ? ? ? 83 A4 24", 7), 0xFFFFFFFF);
+}
+
+static void Patch32()
+{
+	spdlog::info("Patch 32...");
+
+	hook::put(hook::get_pattern("C7 84 24 ? ? ? ? ? ? ? ? C1 E9 1C 89 8C 24", 7), 0xFFFFFFFF);
+}
+
+static void Patch33()
+{
+	spdlog::info("Patch 33...");
+
+	static struct : jitasm::Frontend
+	{
+		void InternalMain() override
+		{
+			push(r8);
+			push(r9);
+			sub(rsp, 0x18);
+
+			mov(rcx, rbx); // param: CScenarioPoint*
+			mov(rax, (uintptr_t)GetSavedModelSetId);
+			call(rax);
+			mov(edx, eax);
+
+			add(rsp, 0x18);
+			pop(r9);
+			pop(r8);
+
+			mov(rcx, rsi);
+			ret();
+		}
+	} getModelSetIdStub;
+
+	auto location = hook::get_pattern("0F B6 53 16 48 8B CE E8");
+	hook::nop(location, 0x7);
+	hook::call(location, getModelSetIdStub.GetCode());
 }
 
 static DWORD WINAPI Main()
@@ -1112,6 +1237,12 @@ static DWORD WINAPI Main()
 	Patch25();
 	Patch26();
 	Patch27();
+	Patch28();
+	Patch29();
+	Patch30();
+	Patch31();
+	Patch32();
+	Patch33();
 
 	MH_EnableHook(MH_ALL_HOOKS);
 
