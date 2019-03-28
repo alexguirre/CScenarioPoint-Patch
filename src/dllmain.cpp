@@ -96,7 +96,7 @@ static uint32_t GetSavedScenarioType(CScenarioPoint* point)
 
 static void Patch1()
 {
-	spdlog::info("Patch 1...");
+	spdlog::info(__func__);
 
 	// CScenarioPointRegion::LookUps::ConvertHashesToIndices
 	hook::put(hook::get_pattern("41 BD ? ? ? ? 85 ED 7E 51 4C 8B F3", 2), 0xFFFFFFFF);
@@ -121,7 +121,7 @@ static void CScenarioPoint_TransformIdsToIndices_detour(CScenarioPointRegion::sL
 
 static void Patch2()
 {
-	spdlog::info("Patch 2...");
+	spdlog::info(__func__);
 
 	// CScenarioPoint::TransformIdsToIndices
 	MH_CreateHook(hook::get_pattern("48 8B 01 44 0F B6 42 ? 0F B6 72 16", -0xF), CScenarioPoint_TransformIdsToIndices_detour, (void**)&CScenarioPoint_TransformIdsToIndices_orig);
@@ -129,7 +129,7 @@ static void Patch2()
 
 static void Patch3()
 {
-	spdlog::info("Patch 3...");
+	spdlog::info(__func__);
 
 	// CScenarioInfoManager::IsValidModelSet
 	hook::put(hook::get_pattern("81 FF ? ? ? ? 74 6F 48 8B 05", 2), 0xFFFFFFFF);
@@ -137,7 +137,7 @@ static void Patch3()
 
 static void Patch4()
 {
-	spdlog::info("Patch 4...");
+	spdlog::info(__func__);
 
 	// CScenarioPoint::CanScenarioSpawn
 	static struct : jitasm::Frontend
@@ -176,7 +176,7 @@ static void Patch4()
 
 static void Patch5()
 {
-	spdlog::info("Patch 5...");
+	spdlog::info(__func__);
 
 	// bool GetAndLoadScenarioPointModel(__int64 rcx0, signed int scenarioIndex, CScenarioPoint *point, __int64 a4, ...)
 	static struct : jitasm::Frontend
@@ -244,14 +244,6 @@ static bool CScenarioPoint_SetModelSet_detour(CScenarioPoint* _this, uint32_t* m
 	return success;
 }
 
-static void Patch6()
-{
-	spdlog::info("Patch 6...");
-
-	// TODO: remove this hook
-	//MH_CreateHook(hook::get_pattern("48 89 5C 24 ? 57 48 83 EC 20 C6 41 16 FF 41 8A C0"), CScenarioPoint_SetModelSet_detour, (void**)&CScenarioPoint_SetModelSet_orig);
-}
-
 static void(*CScenarioPoint_Delete_orig)(CScenarioPoint*);
 static void CScenarioPoint_Delete_detour(CScenarioPoint* _this)
 {
@@ -260,16 +252,16 @@ static void CScenarioPoint_Delete_detour(CScenarioPoint* _this)
 	CScenarioPoint_Delete_orig(_this);
 }
 
-static void Patch7()
+static void Patch6()
 {
-	spdlog::info("Patch 7...");
+	spdlog::info(__func__);
 
 	MH_CreateHook(hook::get_pattern("48 8B 0D ? ? ? ? E8 ? ? ? ? 48 8B CB E8 ? ? ? ? C6 05", -0xC), CScenarioPoint_Delete_detour, (void**)&CScenarioPoint_Delete_orig);
 }
 
-static void Patch8()
+static void Patch7()
 {
-	spdlog::info("Patch 8...");
+	spdlog::info(__func__);
 
 	static struct : jitasm::Frontend
 	{
@@ -289,15 +281,50 @@ static void Patch8()
 			ret();
 		}
 	} getModelSetIndexAndCmpStub;
-
-	hook::pattern pattern("0F B6 47 16 3D ? ? ? ? 74 13 8B D0 48 8B 05");
-	pattern.count(2);
-	pattern.for_each_result([](const hook::pattern_match& match)
 	{
-		auto location = match.get<void>();
-		hook::nop(location, 0x9);
-		hook::call(location, getModelSetIndexAndCmpStub.GetCode());
-	});
+		hook::pattern pattern("0F B6 47 16 3D ? ? ? ? 74 13 8B D0 48 8B 05");
+		pattern.count(2);
+		pattern.for_each_result([](const hook::pattern_match& match)
+		{
+			auto location = match.get<void>();
+			hook::nop(location, 0x9);
+			hook::call(location, getModelSetIndexAndCmpStub.GetCode());
+		});
+	}
+
+	static struct : jitasm::Frontend
+	{
+		void InternalMain() override
+		{
+			push(r8);
+			push(r9);
+			push(rax);
+			sub(rsp, 0x20);
+
+			mov(rcx, rdi); // param: CScenarioPoint*
+			mov(rax, (uintptr_t)GetSavedScenarioType);
+			call(rax);
+			mov(ebx, eax);
+
+			add(rsp, 0x20);
+			pop(rax);
+			pop(r9);
+			pop(r8);
+
+			movzx(ecx, word_ptr[rax + 0x10]);
+			ret();
+		}
+	} getScenarioTypeStub;
+	{
+		hook::pattern pattern("0F B6 5F 15 0F B7 48 10 3B D9");
+		pattern.count(2);
+		pattern.for_each_result([](const hook::pattern_match& match)
+		{
+			auto location = match.get<void>();
+			hook::nop(location, 0x8);
+			hook::call_rcx(location, getScenarioTypeStub.GetCode());
+		});
+	}
 }
 
 static uint32_t GetFinalModelSetHash(uint32_t hash)
@@ -308,9 +335,9 @@ static uint32_t GetFinalModelSetHash(uint32_t hash)
 	return hash == any_hash ? usepopulation_hash : hash;
 }
 
-static void Patch9()
+static void Patch8()
 {
-	spdlog::info("Patch 9...");
+	spdlog::info(__func__);
 
 	// CScenarioPoint::InitFromSpawnPointDef
 
@@ -379,9 +406,9 @@ static void* CSpawnPoint_dtor_detour(void* spawnPoint, char a2)
 	return CSpawnPoint_dtor_orig(spawnPoint, a2);
 }
 
-static void Patch10()
+static void Patch9()
 {
-	spdlog::info("Patch 10...");
+	spdlog::info(__func__);
 
 	auto cspawnPointVTable = hook::get_address<void**>(hook::get_pattern("48 8D 05 ? ? ? ? 41 B9 ? ? ? ? 48 89 02", 3));
 	CSpawnPoint_dtor_orig = (decltype(CSpawnPoint_dtor_orig))cspawnPointVTable[0];
@@ -475,9 +502,9 @@ static void CSpawnPointOverrideExtension_OverrideScenarioPoint_detour(char* spaw
 	CSpawnPointOverrideExtension_OverrideScenarioPoint_orig(spawnPointOverrideExtension, point);
 }
 
-static void Patch11()
+static void Patch10()
 {
-	spdlog::info("Patch 11...");
+	spdlog::info(__func__);
 
 	// CSpawnPointOverrideExtension::OverrideScenarioPoint
 
@@ -485,9 +512,9 @@ static void Patch11()
 		(void**)&CSpawnPointOverrideExtension_OverrideScenarioPoint_orig);
 }
 
-static void Patch12()
+static void Patch11()
 {
-	spdlog::info("Patch 12...");
+	spdlog::info(__func__);
 
 	// patch calls to CScenarioPoint::GetScenarioType
 
@@ -605,9 +632,9 @@ static uint32_t CScenarioPoint_GetScenarioTypeIndex_detour(CScenarioPoint* _this
 	return GetScenarioTypeIndex(_this, subType);
 }
 
-static void Patch13()
+static void Patch12()
 {
-	spdlog::info("Patch 13...");
+	spdlog::info(__func__);
 
 	hook::pattern pattern("0F B6 41 15 4C 8B 05 ? ? ? ? 41 0F B7 48");
 	pattern.count(2);
@@ -622,16 +649,16 @@ static bool CScenarioPoint_CanSpawn_detour(CScenarioPoint* _this, bool a2, bool 
 	return CScenarioPoint_CanScenarioSpawn(_this, GetScenarioTypeIndex(_this, subType), a2, a3);
 }
 
-static void Patch14()
+static void Patch13()
 {
-	spdlog::info("Patch 14...");
+	spdlog::info(__func__);
 
 	MH_CreateHook(hook::get_pattern("40 53 48 83 EC 20 48 8B 05 ? ? ? ? 44 8A DA"), CScenarioPoint_CanSpawn_detour, (void**)&CScenarioPoint_CanSpawn_orig);
 }
 
-static void Patch15()
+static void Patch14()
 {
-	spdlog::info("Patch 15...");
+	spdlog::info(__func__);
 
 	static struct : jitasm::Frontend
 	{
@@ -657,9 +684,9 @@ static void Patch15()
 	hook::call(location, getScenarioTypeStub.GetCode());
 }
 
-static void Patch16()
+static void Patch15()
 {
-	spdlog::info("Patch 16...");
+	spdlog::info(__func__);
 
 	static struct : jitasm::Frontend
 	{
@@ -690,9 +717,9 @@ static void Patch16()
 	}
 }
 
-static void Patch17()
+static void Patch16()
 {
-	spdlog::info("Patch 17...");
+	spdlog::info(__func__);
 
 	// CTaskUseScenario::ctor
 
@@ -720,9 +747,9 @@ static void Patch17()
 	hook::call_rcx(location, getScenarioTypeStub.GetCode());
 }
 
-static void Patch18()
+static void Patch17()
 {
-	spdlog::info("Patch 18...");
+	spdlog::info(__func__);
 
 	static struct : jitasm::Frontend
 	{
@@ -759,9 +786,9 @@ static void Patch18()
 	hook::call(location, getScenarioTypeStub.GetCode());
 }
 
-static void Patch19()
+static void Patch18()
 {
-	spdlog::info("Patch 19...");
+	spdlog::info(__func__);
 
 	static struct : jitasm::Frontend
 	{
@@ -789,9 +816,9 @@ static void Patch19()
 	hook::call(location, isVehicleInfoStub.GetCode());
 }
 
-static void Patch20()
+static void Patch19()
 {
-	spdlog::info("Patch 20...");
+	spdlog::info(__func__);
 
 	static struct : jitasm::Frontend
 	{
@@ -830,9 +857,9 @@ static void Patch20()
 	hook::call(location, getScenarioTypeStub.GetCode());
 }
 
-static void Patch21()
+static void Patch20()
 {
-	spdlog::info("Patch 21...");
+	spdlog::info(__func__);
 
 	static struct : jitasm::Frontend
 	{
@@ -862,14 +889,14 @@ static void Patch21()
 	hook::call(location, getScenarioTypeStub.GetCode());
 }
 
-static void Patch22()
+static void Patch21()
 {
-	spdlog::info("Patch 22...");
+	spdlog::info(__func__);
 
 	static struct : jitasm::Frontend
 	{
 		// TODO: verify that this patch is working
-		static uint32_t wrap(CScenarioPoint* p) { spdlog::info("Patch22"); spdlog::default_logger()->flush(); return GetSavedScenarioType(p); }
+		static uint32_t wrap(CScenarioPoint* p) { spdlog::info("Patch21"); spdlog::default_logger()->flush(); return GetSavedScenarioType(p); }
 		void InternalMain() override
 		{
 			push(rax);
@@ -892,9 +919,9 @@ static void Patch22()
 	hook::call(location, getScenarioTypeStub.GetCode());
 }
 
-static void Patch23()
+static void Patch22()
 {
-	spdlog::info("Patch 23...");
+	spdlog::info(__func__);
 
 	static struct : jitasm::Frontend
 	{
@@ -922,14 +949,14 @@ static void Patch23()
 	hook::call(location, getScenarioTypeStub.GetCode());
 }
 
-static void Patch24()
+static void Patch23()
 {
-	spdlog::info("Patch 24...");
+	spdlog::info(__func__);
 
 	static struct : jitasm::Frontend
 	{
 		// TODO: verify that this patch is working
-		static uint32_t wrap(CScenarioPoint* p) { spdlog::info("Patch24"); spdlog::default_logger()->flush(); return GetSavedScenarioType(p); }
+		static uint32_t wrap(CScenarioPoint* p) { spdlog::info("Patch23"); spdlog::default_logger()->flush(); return GetSavedScenarioType(p); }
 		void InternalMain() override
 		{
 			push(r8);
@@ -957,47 +984,9 @@ static void Patch24()
 	hook::call(location, getScenarioTypeStub.GetCode());
 }
 
-static void Patch25()
+static void Patch24()
 {
-	spdlog::info("Patch 25...");
-
-	static struct : jitasm::Frontend
-	{
-		void InternalMain() override
-		{
-			push(r8);
-			push(r9);
-			push(rax);
-			sub(rsp, 0x20);
-
-			mov(rcx, rdi); // param: CScenarioPoint*
-			mov(rax, (uintptr_t)GetSavedScenarioType);
-			call(rax);
-			mov(ebx, eax);
-
-			add(rsp, 0x20);
-			pop(rax);
-			pop(r9);
-			pop(r8);
-
-			movzx(ecx, word_ptr[rax + 0x10]);
-			ret();
-		}
-	} getModelSetIndexStub;
-
-	hook::pattern pattern("0F B6 5F 15 0F B7 48 10 3B D9");
-	pattern.count(2);
-	pattern.for_each_result([](const hook::pattern_match& match)
-	{
-		auto location = match.get<void>();
-		hook::nop(location, 0x8);
-		hook::call_rcx(location, getModelSetIndexStub.GetCode());
-	});
-}
-
-static void Patch26()
-{
-	spdlog::info("Patch 26...");
+	spdlog::info(__func__);
 
 	// CScenarioPoint::TryCreateCargen
 	static struct : jitasm::Frontend
@@ -1055,9 +1044,9 @@ static void Patch26()
 	}
 }
 
-static void Patch27()
+static void Patch25()
 {
-	spdlog::info("Patch 27...");
+	spdlog::info(__func__);
 
 	hook::pattern pattern("81 FA ? ? ? ? 74 14 48 8B 05");
 	pattern.count(2);
@@ -1067,9 +1056,9 @@ static void Patch27()
 	});
 }
 
-static void Patch28()
+static void Patch26()
 {
-	spdlog::info("Patch 28...");
+	spdlog::info(__func__);
 
 	// CreateCargen
 	hook::put(hook::get_pattern("81 FD ? ? ? ? 41 0F 95 C6", 2), 0xFFFFFFFF);
@@ -1122,9 +1111,9 @@ static void CCargen_Initialize_detour(CCargen* cargen, int a2, int a3, int a4, f
 	CCargen_Initialize_orig(cargen, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15, a16, a17, scenarioType, a19, a20, a21, a22, a23, a24);
 }
 
-static void Patch29()
+static void Patch27()
 {
-	spdlog::info("Patch 29...");
+	spdlog::info(__func__);
 
 	// CCargen::Initialize
 	MH_CreateHook(hook::get_pattern("41 57 48 8B EC 48 83 EC 30 80 61 3B 7F", -0x12), CCargen_Initialize_detour, (void**)&CCargen_Initialize_orig);
@@ -1138,32 +1127,32 @@ static void DeleteCargenFromPool_detour(void* pool, CCargen* cargen)
 	DeleteCargenFromPool_orig(pool, cargen);
 }
 
-static void Patch30()
+static void Patch28()
 {
-	spdlog::info("Patch 30...");
+	spdlog::info(__func__);
 
 	// CCargen::Initialize
 	MH_CreateHook(hook::get_pattern("48 85 D2 74 7E 48 89 5C 24 ? 48 89 6C 24"), DeleteCargenFromPool_detour, (void**)&DeleteCargenFromPool_orig);
 }
 
-static void Patch31()
+static void Patch29()
 {
-	spdlog::info("Patch 31...");
+	spdlog::info(__func__);
 
 	// CREATE_SCRIPT_VEHICLE_GENERATOR
 	hook::put(hook::get_pattern("C7 84 24 ? ? ? ? ? ? ? ? 83 A4 24", 7), 0xFFFFFFFF);
 }
 
-static void Patch32()
+static void Patch30()
 {
-	spdlog::info("Patch 32...");
+	spdlog::info(__func__);
 
 	hook::put(hook::get_pattern("C7 84 24 ? ? ? ? ? ? ? ? C1 E9 1C 89 8C 24", 7), 0xFFFFFFFF);
 }
 
-static void Patch33()
+static void Patch31()
 {
-	spdlog::info("Patch 33...");
+	spdlog::info(__func__);
 
 	static struct : jitasm::Frontend
 	{
@@ -1192,9 +1181,9 @@ static void Patch33()
 	hook::call(location, getModelSetIdStub.GetCode());
 }
 
-static void Patch34()
+static void Patch32()
 {
-	spdlog::info("Patch 34...");
+	spdlog::info(__func__);
 
 	static struct : jitasm::Frontend
 	{
@@ -1223,9 +1212,9 @@ static void Patch34()
 	hook::call(location, getScenarioTypeStub.GetCode());
 }
 
-static void Patch35()
+static void Patch33()
 {
-	spdlog::info("Patch 35...");
+	spdlog::info(__func__);
 
 	static struct : jitasm::Frontend
 	{
@@ -1301,12 +1290,10 @@ static DWORD WINAPI Main()
 	Patch31();
 	Patch32();
 	Patch33();
-	Patch34();
-	Patch35();
 
 	MH_EnableHook(MH_ALL_HOOKS);
 
-	spdlog::info("End");
+	spdlog::info("Initialization finished");
 	return 1;
 }
 
