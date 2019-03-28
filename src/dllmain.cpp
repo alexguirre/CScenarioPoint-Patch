@@ -1217,11 +1217,11 @@ static void Patch34()
 			lea(rdx, qword_ptr[rsp + 0x30]);
 			ret();
 		}
-	} getModelSetIdStub;
+	} getScenarioTypeStub;
 
 	auto location = hook::get_pattern("0F B6 76 39 48 8D 54 24 ? 8B CE");
 	hook::nop(location, 0x7);
-	hook::call(location, getModelSetIdStub.GetCode());
+	hook::call(location, getScenarioTypeStub.GetCode());
 }
 
 static DWORD WINAPI Main()
