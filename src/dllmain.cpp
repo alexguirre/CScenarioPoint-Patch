@@ -1233,10 +1233,38 @@ static void Patch33()
 			ret();
 		}
 	} getScenarioTypeStub;
+	{
+		auto location = hook::get_pattern("0F B6 7B 39 45 33 C9");
+		hook::nop(location, 0x7);
+		hook::call(location, getScenarioTypeStub.GetCode());
+	}
 
-	auto location = hook::get_pattern("0F B6 7B 39 45 33 C9");
-	hook::nop(location, 0x7);
-	hook::call(location, getScenarioTypeStub.GetCode());
+	static struct : jitasm::Frontend
+	{
+		void InternalMain() override
+		{
+			push(r8);
+			push(r9);
+			sub(rsp, 0x18);
+
+			mov(rcx, r13); // param: CScenarioPoint*
+			mov(rax, (uintptr_t)GetSavedModelSetId);
+			call(rax);
+
+			add(rsp, 0x18);
+			pop(r9);
+			pop(r8);
+
+			ret();
+		}
+	} getModelSetIdStub;
+	{
+		auto location = hook::get_pattern("41 0F B6 45 ? 4C 89 65 AF 3D");
+		hook::nop(location, 0x5);
+		hook::call(location, getModelSetIdStub.GetCode());
+	}
+
+	hook::put(hook::get_pattern("4C 89 65 AF 3D ? ? ? ? 74 13 8B D0", 5), 0xFFFFFFFF);
 }
 
 static DWORD WINAPI Main()
