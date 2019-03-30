@@ -1427,8 +1427,8 @@ static void Patch38()
 
 	static struct : jitasm::Frontend
 	{
-		uintptr_t returnAddr = (uintptr_t)hook::get_pattern("41 8A D6 48 8B CB E8 ? ? ? ? 84 C0 74 34");
-		uintptr_t jumpAddr = (uintptr_t)hook::get_pattern("40 84 F6 74 4E 48 8D 55 30");
+		const uintptr_t returnAddr = (uintptr_t)hook::get_pattern("41 8A D6 48 8B CB E8 ? ? ? ? 84 C0 74 34");
+		const uintptr_t jumpAddr = (uintptr_t)hook::get_pattern("40 84 F6 74 4E 48 8D 55 30");
 
 		void InternalMain() override
 		{
@@ -1491,8 +1491,8 @@ static void Patch40()
 
 	static struct : jitasm::Frontend
 	{
-		uintptr_t returnAddr = (uintptr_t)hook::get_pattern("F3 0F 10 3D ? ? ? ? F3 0F 10 35 ? ? ? ? 48 8B CB");
-		uintptr_t jumpAddr = (uintptr_t)hook::get_pattern("F3 0F 10 44 24 ? F3 0F 5C 43 ? 0F 2F 05 ? ? ? ? 73 07");
+		const uintptr_t returnAddr = (uintptr_t)hook::get_pattern("F3 0F 10 3D ? ? ? ? F3 0F 10 35 ? ? ? ? 48 8B CB");
+		const uintptr_t jumpAddr = (uintptr_t)hook::get_pattern("F3 0F 10 44 24 ? F3 0F 5C 43 ? 0F 2F 05 ? ? ? ? 73 07");
 
 		void InternalMain() override
 		{
@@ -1586,6 +1586,45 @@ static void Patch41()
 	}
 }
 
+static void Patch42()
+{
+	spdlog::info(__func__);
+
+	static struct : jitasm::Frontend
+	{
+		const uintptr_t returnAddr = (uintptr_t)hook::get_pattern("80 7F 39 FF 74 5E", 0x6);
+		const uintptr_t jumpAddr = (uintptr_t)hook::get_pattern("8A 4F 3A 48 8B C3");
+
+		void InternalMain() override
+		{
+			push(r8);
+			push(r9);
+			sub(rsp, 0x10);
+
+			mov(rcx, rdi); // param: CCargen*
+			mov(rax, (uintptr_t)GetSavedCargenScenarioType);
+			call(rax);
+
+			add(rsp, 0x10);
+			pop(r9);
+			pop(r8);
+
+			cmp(eax, 0xFFFFFFFF);
+			jz("doJump");
+			mov(rax, returnAddr);
+			jmp(rax);
+
+
+			L("doJump");
+			mov(rax, jumpAddr);
+			jmp(rax);
+		}
+	} cmpScenarioTypeStub;
+	auto location = hook::get_pattern("80 7F 39 FF 74 5E");
+	hook::nop(location, 0x6);
+	hook::jump(location, cmpScenarioTypeStub.GetCode());
+}
+
 static DWORD WINAPI Main()
 {
 	if (EnableLogging)
@@ -1645,6 +1684,7 @@ static DWORD WINAPI Main()
 	Patch39();
 	Patch40();
 	Patch41();
+	Patch42();
 
 	MH_EnableHook(MH_ALL_HOOKS);
 
