@@ -1530,10 +1530,14 @@ static void Patch41()
 {
 	spdlog::info(__func__);
 
-	static struct : jitasm::Frontend
+	struct cmpScenarioTypeStub : jitasm::Frontend
 	{
-		uintptr_t returnAddr = (uintptr_t)hook::get_pattern("E8 ? ? ? ? 48 8B D8 48 85 C0 0F 84 ? ? ? ? 8A 48 10");
-		uintptr_t jumpAddr = (uintptr_t)hook::get_pattern("49 8B CE E8 ? ? ? ? 41 8B 16 66 89 45 40");
+		const uintptr_t returnAddr, jumpAddr;
+
+		cmpScenarioTypeStub(void* returnAddr, void* jumpAddr)
+			: returnAddr((uintptr_t)returnAddr), jumpAddr((uintptr_t)jumpAddr)
+		{
+		}
 
 		void InternalMain() override
 		{
@@ -1561,11 +1565,25 @@ static void Patch41()
 			mov(rax, jumpAddr);
 			jmp(rax);
 		}
-	} cmpScenarioTypeStub;
-
-	auto location = hook::get_pattern("80 79 39 FF 0F 84 ? ? ? ? E8 ? ? ? ? 48 8B D8");
-	hook::nop(location, 0xA);
-	hook::jump(location, cmpScenarioTypeStub.GetCode());
+	};
+	{
+		static cmpScenarioTypeStub stub(
+			hook::get_pattern("E8 ? ? ? ? 48 8B D8 48 85 C0 0F 84 ? ? ? ? 8A 48 10"),
+			hook::get_pattern("49 8B CE E8 ? ? ? ? 41 8B 16 66 89 45 40")
+		);
+		auto location = hook::get_pattern("80 79 39 FF 0F 84 ? ? ? ? E8 ? ? ? ? 48 8B D8");
+		hook::nop(location, 0xA);
+		hook::jump(location, stub.GetCode());
+	}
+	{
+		static cmpScenarioTypeStub stub(
+			hook::get_pattern("F6 41 3A 40 75 28 E8"),
+			hook::get_pattern("C0 E8 06 A8 01 74 04 32 C0 EB 02 B0 01", 0xB)
+		);
+		auto location = hook::get_pattern("80 79 39 FF 74 2E F6 41 3A 40");
+		hook::nop(location, 0x6);
+		hook::jump(location, stub.GetCode());
+	}
 }
 
 static DWORD WINAPI Main()
