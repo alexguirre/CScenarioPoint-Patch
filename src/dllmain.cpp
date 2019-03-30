@@ -1427,12 +1427,11 @@ static void Patch38()
 
 	static struct : jitasm::Frontend
 	{
+		uintptr_t returnAddr = (uintptr_t)hook::get_pattern("41 8A D6 48 8B CB E8 ? ? ? ? 84 C0 74 34");
+		uintptr_t jumpAddr = (uintptr_t)hook::get_pattern("40 84 F6 74 4E 48 8D 55 30");
+
 		void InternalMain() override
 		{
-			uintptr_t returnAddr = (uintptr_t)hook::get_pattern("41 8A D6 48 8B CB E8 ? ? ? ? 84 C0 74 34");
-			uintptr_t jumpAddr = (uintptr_t)hook::get_pattern("40 84 F6 74 4E 48 8D 55 30");
-
-
 			mov(rcx, rbx); // param: CCargen*
 			mov(rax, (uintptr_t)GetSavedCargenScenarioType);
 			call(rax);
@@ -1484,6 +1483,89 @@ static void Patch39()
 	auto location = hook::get_pattern("80 7B 39 FF 44 0F 28 C0");
 	hook::nop(location, 0x8);
 	hook::call(location, cmpScenarioTypeStub.GetCode());
+}
+
+static void Patch40()
+{
+	spdlog::info(__func__);
+
+	static struct : jitasm::Frontend
+	{
+		uintptr_t returnAddr = (uintptr_t)hook::get_pattern("F3 0F 10 3D ? ? ? ? F3 0F 10 35 ? ? ? ? 48 8B CB");
+		uintptr_t jumpAddr = (uintptr_t)hook::get_pattern("F3 0F 10 44 24 ? F3 0F 5C 43 ? 0F 2F 05 ? ? ? ? 73 07");
+
+		void InternalMain() override
+		{
+			push(r8);
+			push(r9);
+			sub(rsp, 0x10);
+
+			mov(rcx, rbx); // param: CCargen*
+			mov(rax, (uintptr_t)GetSavedCargenScenarioType);
+			call(rax);
+
+			add(rsp, 0x10);
+			pop(r9);
+			pop(r8);
+
+			cmp(eax, 0xFFFFFFFF);
+			jz("doJump");
+
+			mov(rax, returnAddr);
+			jmp(rax);
+
+
+			L("doJump");
+			mov(rax, jumpAddr);
+			jmp(rax);
+		}
+	} cmpScenarioTypeStub;
+
+	auto location = hook::get_pattern("80 7B 39 FF 74 7C F3 0F 10 3D");
+	hook::nop(location, 0x6);
+	hook::jump(location, cmpScenarioTypeStub.GetCode());
+}
+
+static void Patch41()
+{
+	spdlog::info(__func__);
+
+	static struct : jitasm::Frontend
+	{
+		uintptr_t returnAddr = (uintptr_t)hook::get_pattern("E8 ? ? ? ? 48 8B D8 48 85 C0 0F 84 ? ? ? ? 8A 48 10");
+		uintptr_t jumpAddr = (uintptr_t)hook::get_pattern("49 8B CE E8 ? ? ? ? 41 8B 16 66 89 45 40");
+
+		void InternalMain() override
+		{
+			push(r8);
+			push(r9);
+			push(rcx);
+			sub(rsp, 0x18);
+
+			// rcx already is CCargen*
+			mov(rax, (uintptr_t)GetSavedCargenScenarioType);
+			call(rax);
+
+			add(rsp, 0x18);
+			pop(rcx);
+			pop(r9);
+			pop(r8);
+
+			cmp(eax, 0xFFFFFFFF);
+			jz("doJump");
+			mov(rax, returnAddr);
+			jmp(rax);
+
+
+			L("doJump");
+			mov(rax, jumpAddr);
+			jmp(rax);
+		}
+	} cmpScenarioTypeStub;
+
+	auto location = hook::get_pattern("80 79 39 FF 0F 84 ? ? ? ? E8 ? ? ? ? 48 8B D8");
+	hook::nop(location, 0xA);
+	hook::jump(location, cmpScenarioTypeStub.GetCode());
 }
 
 static DWORD WINAPI Main()
@@ -1543,6 +1625,8 @@ static DWORD WINAPI Main()
 	Patch37();
 	Patch38();
 	Patch39();
+	Patch40();
+	Patch41();
 
 	MH_EnableHook(MH_ALL_HOOKS);
 
