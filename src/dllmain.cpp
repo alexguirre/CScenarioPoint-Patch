@@ -11,6 +11,7 @@
 #include <unordered_map>
 #include <MinHook.h>
 #include <jitasm.h>
+#include <filesystem>
 
 static constexpr bool EnableLogging = true;
 
@@ -40,6 +41,25 @@ static void FindGameVariables()
 	g_ScenarioInfoMgr = hook::get_address<CScenarioInfoManager**>(hook::get_pattern("8B 42 30 48 8B 0D ? ? ? ? 48 8D 54 24 ? 89 44 24 30", 6));
 }
 
+template<int FramesToSkip = 1>
+static void LogStackTrace()
+{
+	void* stack[32];
+	USHORT frames = CaptureStackBackTrace(FramesToSkip, 32, stack, NULL);
+
+	spdlog::warn("\tStack Trace:");
+	for (int i = 0; i < frames; i++)
+	{
+		void* address = stack[i];
+		HMODULE module = NULL;
+		GetModuleHandleEx(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, (LPCSTR)address, &module);
+		char moduleName[256];
+		GetModuleFileName(module, moduleName, 256);
+
+		spdlog::warn("\t\t{:16X} - {}+{:08X}", (uintptr_t)address, std::filesystem::path(moduleName).filename().string().c_str(), ((uintptr_t)address - (uintptr_t)module));
+	}
+}
+
 struct ExtendedScenarioPoint
 {
 	uint32_t iType;
@@ -59,6 +79,7 @@ static void RemovePoint(CScenarioPoint* point)
 		spdlog::warn("RemovePoint:: POINT {} NOT FOUND IN MAP ({}, {}, {})",
 			(void*)point, point->vPositionAndDirection[0], point->vPositionAndDirection[1],
 			point->vPositionAndDirection[2]);
+		LogStackTrace<2>();
 	}
 }
 
@@ -74,6 +95,7 @@ static uint32_t GetSavedModelSetId(CScenarioPoint* point)
 		spdlog::warn("GetSavedModelSetId:: POINT {} NOT FOUND IN MAP ({}, {}, {})",
 			(void*)point, point->vPositionAndDirection[0], point->vPositionAndDirection[1],
 			point->vPositionAndDirection[2]);
+		LogStackTrace<2>();
 		return point->ModelSetId;
 	}
 }
@@ -90,6 +112,7 @@ static uint32_t GetSavedScenarioType(CScenarioPoint* point)
 		spdlog::warn("GetSavedScenarioType:: POINT {} NOT FOUND IN MAP ({}, {}, {})",
 			(void*)point, point->vPositionAndDirection[0], point->vPositionAndDirection[1],
 			point->vPositionAndDirection[2]);
+		LogStackTrace<2>();
 		return point->iType;
 	}
 }
@@ -1082,6 +1105,7 @@ static void RemoveCargen(CCargen* cargen)
 		spdlog::warn("RemoveCargen:: CARGEN {} NOT FOUND IN MAP ({}, {}, {})",
 			(void*)cargen, cargen->Position[0], cargen->Position[1],
 			cargen->Position[2]);
+		LogStackTrace<2>();
 	}
 }
 
@@ -1097,6 +1121,7 @@ static uint32_t GetSavedCargenScenarioType(CCargen* cargen)
 		spdlog::warn("GetSavedScenarioType:: CARGEN {} NOT FOUND IN MAP ({}, {}, {})",
 			(void*)cargen, cargen->Position[0], cargen->Position[1],
 			cargen->Position[2]);
+		LogStackTrace<2>();
 		return cargen->ScenarioType;
 	}
 }
