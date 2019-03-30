@@ -1333,6 +1333,65 @@ static void Patch35()
 	hook::call_rcx(location, getScenarioTypeStub.GetCode());
 }
 
+static void Patch36()
+{
+	spdlog::info(__func__);
+
+	static struct : jitasm::Frontend
+	{
+		void InternalMain() override
+		{
+			push(r8);
+			push(rcx);
+			sub(rsp, 0x18);
+
+			mov(rcx, rdx); // param: CCargen*
+			mov(rax, (uintptr_t)GetSavedCargenScenarioType);
+			call(rax);
+			mov(r9d, eax);
+
+			add(rsp, 0x18);
+			pop(rcx);
+			pop(r8);
+
+			ret();
+		}
+	} getCargenScenarioTypeStub;
+	{
+		auto location = hook::get_pattern("44 0F B6 4A ? 49 8B D8");
+		hook::nop(location, 0x5);
+		hook::call(location, getCargenScenarioTypeStub.GetCode());
+	}
+
+	static struct : jitasm::Frontend
+	{
+		// TODO: verify that this patch is working
+		static uint32_t wrap(CScenarioPoint* p) { spdlog::info("Patch36:getPointScenarioTypeStub:{}", (void*)p); spdlog::default_logger()->flush(); return GetSavedScenarioType(p); }
+		void InternalMain() override
+		{
+			push(r8);
+			push(rax);
+			sub(rsp, 0x18);
+
+			mov(rcx, rax); // param: CScenarioPoint*
+			mov(rax, (uintptr_t)wrap);
+			call(rax);
+			mov(r9d, eax);
+
+			add(rsp, 0x18);
+			pop(rax);
+			pop(r8);
+
+			ret();
+		}
+	} getPointScenarioTypeStub;
+	{
+		auto location = hook::get_pattern("44 0F B6 48 ? 48 8D 0D");
+		hook::nop(location, 0x5);
+		hook::call_rcx(location, getPointScenarioTypeStub.GetCode());
+	}
+}
+
 static DWORD WINAPI Main()
 {
 	if (EnableLogging)
@@ -1386,6 +1445,7 @@ static DWORD WINAPI Main()
 	Patch33();
 	Patch34();
 	Patch35();
+	Patch36();
 
 	MH_EnableHook(MH_ALL_HOOKS);
 
