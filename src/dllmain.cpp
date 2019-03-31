@@ -919,7 +919,7 @@ static void Patch21()
 	static struct : jitasm::Frontend
 	{
 		// TODO: verify that this patch is working
-		static uint32_t wrap(CScenarioPoint* p) { spdlog::info("Patch21"); spdlog::default_logger()->flush(); return GetSavedScenarioType(p); }
+		static uint32_t wrap(CScenarioPoint* p) { spdlog::info("Patch21:{}:({}, {}, {})", (void*)p, p->vPositionAndDirection[0], p->vPositionAndDirection[1], p->vPositionAndDirection[2]); spdlog::default_logger()->flush(); return GetSavedScenarioType(p); }
 		void InternalMain() override
 		{
 			push(rax);
@@ -979,7 +979,7 @@ static void Patch23()
 	static struct : jitasm::Frontend
 	{
 		// TODO: verify that this patch is working
-		static uint32_t wrap(CScenarioPoint* p) { spdlog::info("Patch23"); spdlog::default_logger()->flush(); return GetSavedScenarioType(p); }
+		static uint32_t wrap(CScenarioPoint* p) { spdlog::info("Patch23:{}:({}, {}, {})", (void*)p, p->vPositionAndDirection[0], p->vPositionAndDirection[1], p->vPositionAndDirection[2]); spdlog::default_logger()->flush(); return GetSavedScenarioType(p); }
 		void InternalMain() override
 		{
 			push(r8);
@@ -1331,7 +1331,7 @@ static void Patch35()
 	static struct : jitasm::Frontend
 	{
 		// TODO: verify that this patch is working
-		static uint32_t wrap(CScenarioPoint* p) { spdlog::info("Patch35:{}", (void*)p); spdlog::default_logger()->flush(); return GetSavedScenarioType(p); }
+		static uint32_t wrap(CScenarioPoint* p) { spdlog::info("Patch35:{}:({}, {}, {})", (void*)p, p->vPositionAndDirection[0], p->vPositionAndDirection[1], p->vPositionAndDirection[2]); spdlog::default_logger()->flush(); return GetSavedScenarioType(p); }
 		void InternalMain() override
 		{
 			push(r8);
@@ -1391,7 +1391,7 @@ static void Patch36()
 	static struct : jitasm::Frontend
 	{
 		// TODO: verify that this patch is working
-		static uint32_t wrap(CScenarioPoint* p) { spdlog::info("Patch36:getPointScenarioTypeStub:{}", (void*)p); spdlog::default_logger()->flush(); return GetSavedScenarioType(p); }
+		static uint32_t wrap(CScenarioPoint* p) { spdlog::info("Patch36:getPointScenarioTypeStub:{}:({}, {}, {})", (void*)p, p->vPositionAndDirection[0], p->vPositionAndDirection[1], p->vPositionAndDirection[2], (void*)p); spdlog::default_logger()->flush(); return GetSavedScenarioType(p); }
 		void InternalMain() override
 		{
 			push(r8);
@@ -1919,6 +1919,71 @@ static void Patch46()
 	hook::call(location, getScenarioTypeStub.GetCode());
 }
 
+static void Patch47()
+{
+	spdlog::info(__func__);
+
+	static struct : jitasm::Frontend
+	{
+		// TODO: verify that this patch is working
+		static uint32_t wrap(CCargen* c) { spdlog::info("Patch47:cmpScenarioTypeStub:{}:({}, {}, {})", (void*)c, c->Position[0], c->Position[1], c->Position[2]); spdlog::default_logger()->flush(); return GetSavedCargenScenarioType(c); }
+		void InternalMain() override
+		{
+			push(rcx);
+			push(rdx);
+			sub(rsp, 0x10);
+
+			// rcx already is CCargen*
+			mov(rax, (uintptr_t)wrap);
+			call(rax);
+
+			add(rsp, 0x10);
+			pop(rdx);
+			pop(rcx);
+
+			cmp(eax, 0xFFFFFFFF);
+			mov(r14, rdx);
+
+			ret();
+		}
+	} cmpScenarioTypeStub;
+	{
+		auto location = hook::get_pattern("80 79 39 FF 4C 8B F2");
+		hook::nop(location, 0x7);
+		hook::jump(location, cmpScenarioTypeStub.GetCode());
+	}
+
+	static struct : jitasm::Frontend
+	{
+		const uintptr_t returnAddr = (uintptr_t)hook::get_pattern("F6 47 3A 04 74 78");
+		const uintptr_t jumpAddr = (uintptr_t)hook::get_pattern("0F B6 05 ? ? ? ? 48 8B 5C 24");
+
+		// TODO: verify that this patch is working
+		static uint32_t wrap(CCargen* c) { spdlog::info("Patch47:cmpScenarioTypeStub2:{}:({}, {}, {})", (void*)c, c->Position[0], c->Position[1], c->Position[2]); spdlog::default_logger()->flush(); return GetSavedCargenScenarioType(c); }
+		void InternalMain() override
+		{
+			mov(rcx, rdi); // param: CCargen*
+			mov(rax, (uintptr_t)wrap);
+			call(rax);
+
+			cmp(eax, 0xFFFFFFFF);
+			jz("doJump");
+			mov(rax, returnAddr);
+			jmp(rax);
+
+
+			L("doJump");
+			mov(rax, jumpAddr);
+			jmp(rax);
+		}
+	} cmpScenarioTypeStub2;
+	{
+		auto location = hook::get_pattern("80 7F 39 FF 74 7E");
+		hook::nop(location, 0x6);
+		hook::jump(location, cmpScenarioTypeStub2.GetCode());
+	}
+}
+
 static DWORD WINAPI Main()
 {
 	if (EnableLogging)
@@ -1983,6 +2048,7 @@ static DWORD WINAPI Main()
 	Patch44();
 	Patch45();
 	Patch46();
+	Patch47();
 
 	MH_EnableHook(MH_ALL_HOOKS);
 
