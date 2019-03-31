@@ -1672,8 +1672,8 @@ static void Patch42()
 			hook::get_pattern("80 7F 39 FF 74 5E", 0x6),
 			hook::get_pattern("8A 4F 3A 48 8B C3")
 		);
-	auto location = hook::get_pattern("80 7F 39 FF 74 5E");
-	hook::nop(location, 0x6);
+		auto location = hook::get_pattern("80 7F 39 FF 74 5E");
+		hook::nop(location, 0x6);
 		hook::jump(location, stub.GetCode());
 	}
 	{
@@ -1684,7 +1684,7 @@ static void Patch42()
 		auto location = hook::get_pattern("80 7F 39 FF 74 0D");
 		hook::nop(location, 0x6);
 		hook::jump(location, stub.GetCode());
-}
+	}
 }
 
 static void Patch43()
@@ -1716,6 +1716,64 @@ static void Patch43()
 	auto location = hook::get_pattern("80 7B 39 FF 74 1B");
 	hook::nop(location, 0x6);
 	hook::jump(location, cmpScenarioTypeStub.GetCode());
+}
+
+static void Patch44()
+{
+	spdlog::info(__func__);
+
+	struct cmpScenarioTypeStub : jitasm::Frontend
+	{
+		const uintptr_t returnAddr, jumpAddr;
+
+		cmpScenarioTypeStub(void* returnAddr, void* jumpAddr)
+			: returnAddr((uintptr_t)returnAddr), jumpAddr((uintptr_t)jumpAddr)
+		{
+		}
+
+		void InternalMain() override
+		{
+			push(r8);
+			push(r9);
+			sub(rsp, 0x10);
+
+			mov(rcx, rbx); // param: CCargen*
+			mov(rax, (uintptr_t)GetSavedCargenScenarioType);
+			call(rax);
+
+			add(rsp, 0x10);
+			pop(r9);
+			pop(r8);
+
+			cmp(eax, 0xFFFFFFFF);
+			jnz("doJump");
+			mov(rax, returnAddr);
+			jmp(rax);
+
+
+			L("doJump");
+			mov(rax, jumpAddr);
+			jmp(rax);
+		}
+	};
+	{
+		static cmpScenarioTypeStub stub(
+			hook::get_pattern("EB 48 E8 ? ? ? ? 44 8B 0D"),
+			hook::get_pattern("F3 0F 10 05 ? ? ? ? 0F 2F 05 ? ? ? ? 0F 87 ? ? ? ? B0 01", 0x15)
+		);
+		auto location = hook::get_pattern("80 7B 39 FF 0F 85");
+		hook::nop(location, 0xA);
+		hook::jump(location, stub.GetCode());
+	}
+	{
+		static cmpScenarioTypeStub stub(
+			hook::get_pattern("24 FD 88 43 3A EB DC"),
+			hook::get_pattern("F6 43 3D 01 74 2F E8")
+		);
+		auto location = hook::get_pattern("80 7B 39 FF 75 07");
+		hook::nop(location, 0x6);
+		hook::jump(location, stub.GetCode());
+	}
 }
 
 static DWORD WINAPI Main()
@@ -1779,6 +1837,7 @@ static DWORD WINAPI Main()
 	Patch41();
 	Patch42();
 	Patch43();
+	Patch44();
 
 	MH_EnableHook(MH_ALL_HOOKS);
 
