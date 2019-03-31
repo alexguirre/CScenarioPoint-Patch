@@ -1984,6 +1984,33 @@ static void Patch47()
 	}
 }
 
+static void Patch48()
+{
+	spdlog::info(__func__);
+
+	static struct : jitasm::Frontend
+	{
+		void InternalMain() override
+		{
+			push(rcx);
+			sub(rsp, 0x10);
+			
+			mov(rcx, r15); // param: CScenarioPoint*
+			mov(rax, (uintptr_t)GetSavedScenarioType);
+			call(rax);
+			mov(edx, eax);
+
+			add(rsp, 0x10);
+			pop(rcx);
+
+			ret();
+		}
+	} getScenarioTypeStub;
+	auto location = hook::get_pattern("41 0F B6 57 ? 4C 8D 4C 24");
+	hook::nop(location, 0x5);
+	hook::call(location, getScenarioTypeStub.GetCode());
+}
+
 static DWORD WINAPI Main()
 {
 	if (EnableLogging)
@@ -2049,6 +2076,7 @@ static DWORD WINAPI Main()
 	Patch45();
 	Patch46();
 	Patch47();
+	Patch48();
 
 	MH_EnableHook(MH_ALL_HOOKS);
 
