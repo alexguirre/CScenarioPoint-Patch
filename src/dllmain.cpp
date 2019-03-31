@@ -1633,10 +1633,14 @@ static void Patch42()
 {
 	spdlog::info(__func__);
 
-	static struct : jitasm::Frontend
+	struct cmpScenarioTypeStub : jitasm::Frontend
 	{
-		const uintptr_t returnAddr = (uintptr_t)hook::get_pattern("80 7F 39 FF 74 5E", 0x6);
-		const uintptr_t jumpAddr = (uintptr_t)hook::get_pattern("8A 4F 3A 48 8B C3");
+		const uintptr_t returnAddr, jumpAddr;
+
+		cmpScenarioTypeStub(void* returnAddr, void* jumpAddr)
+			: returnAddr((uintptr_t)returnAddr), jumpAddr((uintptr_t)jumpAddr)
+		{
+		}
 
 		void InternalMain() override
 		{
@@ -1662,10 +1666,25 @@ static void Patch42()
 			mov(rax, jumpAddr);
 			jmp(rax);
 		}
-	} cmpScenarioTypeStub;
+	};
+	{
+		static cmpScenarioTypeStub stub(
+			hook::get_pattern("80 7F 39 FF 74 5E", 0x6),
+			hook::get_pattern("8A 4F 3A 48 8B C3")
+		);
 	auto location = hook::get_pattern("80 7F 39 FF 74 5E");
 	hook::nop(location, 0x6);
-	hook::jump(location, cmpScenarioTypeStub.GetCode());
+		hook::jump(location, stub.GetCode());
+	}
+	{
+		static cmpScenarioTypeStub stub(
+			hook::get_pattern("83 BE ? ? ? ? ? 0F 84 ? ? ? ? 8A 47 3B"),
+			hook::get_pattern("8A 47 3B A8 10 75 65")
+		);
+		auto location = hook::get_pattern("80 7F 39 FF 74 0D");
+		hook::nop(location, 0x6);
+		hook::jump(location, stub.GetCode());
+}
 }
 
 static void Patch43()
