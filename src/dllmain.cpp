@@ -1892,6 +1892,33 @@ static void Patch45()
 	}
 }
 
+static void Patch46()
+{
+	spdlog::info(__func__);
+
+	static struct : jitasm::Frontend
+	{
+		void InternalMain() override
+		{
+			sub(rsp, 0x8);
+
+			// rcx already is CCargen*
+			mov(rax, (uintptr_t)GetSavedCargenScenarioType);
+			call(rax);
+
+			add(rsp, 0x8);
+
+			mov(ecx, eax);
+			test(ecx, ecx);
+
+			ret();
+		}
+	} getScenarioTypeStub;
+	auto location = hook::get_pattern("0F B6 49 39 85 C9");
+	hook::nop(location, 0x6);
+	hook::call(location, getScenarioTypeStub.GetCode());
+}
+
 static DWORD WINAPI Main()
 {
 	if (EnableLogging)
@@ -1955,6 +1982,7 @@ static DWORD WINAPI Main()
 	Patch43();
 	Patch44();
 	Patch45();
+	Patch46();
 
 	MH_EnableHook(MH_ALL_HOOKS);
 
