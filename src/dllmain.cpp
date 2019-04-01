@@ -1627,6 +1627,15 @@ static void Patch41()
 		hook::nop(location, 0x6);
 		hook::jump(location, stub.GetCode());
 	}
+	{
+		static cmpScenarioTypeStub stub(
+			hook::get_address<void*>(hook::get_pattern("80 79 39 FF 0F 85 ? ? ? ? 40 38 35", 0x6)),
+			hook::get_pattern("40 38 35 ? ? ? ? 74 2E F3 0F 10 01")
+		);
+		auto location = hook::get_pattern("80 79 39 FF 0F 85 ? ? ? ? 40 38 35");
+		hook::nop(location, 0xA);
+		hook::jump(location, stub.GetCode());
+	}
 }
 
 static void Patch42()
