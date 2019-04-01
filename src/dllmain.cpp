@@ -2114,6 +2114,73 @@ static void Patch51()
 	hook::call(location, cmpScenarioTypeStub.GetCode());
 }
 
+static void Patch52()
+{
+	spdlog::info(__func__);
+
+	static struct : jitasm::Frontend
+	{
+		void InternalMain() override
+		{
+			push(r8);
+			push(r9);
+			push(rax);
+			sub(rsp, 0x20);
+
+			mov(rcx, rax); // param: CCargen*
+			mov(rax, (uintptr_t)GetSavedCargenScenarioType);
+			call(rax);
+			mov(ecx, eax); // save result
+
+			add(rsp, 0x20);
+			pop(rax);
+			pop(r9);
+			pop(r8);
+
+			cmp(ecx, 0xFFFFFFFF);
+			mov(qword_ptr[rbp - 0x19], r13);
+
+			ret();
+		}
+	} cmpScenarioTypeStub;
+	{
+		auto location = hook::get_pattern("80 78 39 FF 4C 89 6D E7");
+		hook::nop(location, 0x8);
+		hook::call_rcx(location, cmpScenarioTypeStub.GetCode());
+	}
+
+	static struct : jitasm::Frontend
+	{
+		void InternalMain() override
+		{
+			mov(rdx, qword_ptr[r14 + 0x48]);
+
+			push(r8);
+			push(r9);
+			push(rdx);
+			sub(rsp, 0x20);
+
+			mov(rcx, rdx); // param: CCargen*
+			mov(rax, (uintptr_t)GetSavedCargenScenarioType);
+			call(rax);
+
+			add(rsp, 0x20);
+			pop(rdx);
+			pop(r9);
+			pop(r8);
+
+			cmp(eax, 0xFFFFFFFF);
+
+			ret();
+		}
+	} cmpScenarioTypeStub2;
+	{
+		auto location = hook::get_pattern("49 8B 56 48 80 7A 39 FF");
+		hook::nop(location, 0x8);
+		hook::call(location, cmpScenarioTypeStub2.GetCode());
+	}
+}
+
 static DWORD WINAPI Main()
 {
 	if (EnableLogging)
@@ -2183,6 +2250,7 @@ static DWORD WINAPI Main()
 	Patch49();
 	Patch50();
 	Patch51();
+	Patch52();
 
 	MH_EnableHook(MH_ALL_HOOKS);
 
