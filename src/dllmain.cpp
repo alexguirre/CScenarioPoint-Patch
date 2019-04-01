@@ -2064,6 +2064,38 @@ static void Patch50()
 	hook::call(location, getScenarioTypeStub.GetCode());
 }
 
+static void Patch51()
+{
+	spdlog::info(__func__);
+
+	static struct : jitasm::Frontend
+	{
+		void InternalMain() override
+		{
+			sub(rsp, 0x8);
+
+			mov(rcx, rbx); // param: CCargen*
+			mov(rax, (uintptr_t)GetSavedCargenScenarioType);
+			call(rax);
+
+			add(rsp, 0x8);
+
+			cmp(eax, 0xFFFFFFFF);
+			// workaround since jitasm doesn't have `sil` register, so can't do `setnz(sil)`
+			jnz("set");	
+			mov(esi, 0);
+			ret();
+
+			L("set");
+			mov(esi, 1);
+			ret();
+		}
+	} cmpScenarioTypeStub;
+	auto location = hook::get_pattern("80 7B 39 FF 40 0F 95 C6");
+	hook::nop(location, 0x8);
+	hook::call(location, cmpScenarioTypeStub.GetCode());
+}
+
 static DWORD WINAPI Main()
 {
 	if (EnableLogging)
@@ -2132,6 +2164,7 @@ static DWORD WINAPI Main()
 	Patch48();
 	Patch49();
 	Patch50();
+	Patch51();
 
 	MH_EnableHook(MH_ALL_HOOKS);
 
