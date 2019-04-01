@@ -77,8 +77,7 @@ static void RemovePoint(CScenarioPoint* point)
 	if (g_Points.erase(point) == 0)
 	{
 		spdlog::warn("RemovePoint:: POINT {} NOT FOUND IN MAP ({}, {}, {})",
-			(void*)point, point->vPositionAndDirection[0], point->vPositionAndDirection[1],
-			point->vPositionAndDirection[2]);
+			(void*)point, point->vPositionAndDirection[0], point->vPositionAndDirection[1], point->vPositionAndDirection[2]);
 		LogStackTrace<2>();
 	}
 }
@@ -93,8 +92,7 @@ static uint32_t GetSavedModelSetId(CScenarioPoint* point)
 	else
 	{
 		spdlog::warn("GetSavedModelSetId:: POINT {} NOT FOUND IN MAP ({}, {}, {})",
-			(void*)point, point->vPositionAndDirection[0], point->vPositionAndDirection[1],
-			point->vPositionAndDirection[2]);
+			(void*)point, point->vPositionAndDirection[0], point->vPositionAndDirection[1], point->vPositionAndDirection[2]);
 		LogStackTrace<2>();
 		return point->ModelSetId;
 	}
@@ -1103,8 +1101,7 @@ static void RemoveCargen(CCargen* cargen)
 	if (g_Cargens.erase(cargen) == 0)
 	{
 		spdlog::warn("RemoveCargen:: CARGEN {} NOT FOUND IN MAP ({}, {}, {})",
-			(void*)cargen, cargen->Position[0], cargen->Position[1],
-			cargen->Position[2]);
+			(void*)cargen, cargen->Position[0], cargen->Position[1], cargen->Position[2]);
 		LogStackTrace<2>();
 	}
 }
@@ -1119,21 +1116,24 @@ static uint32_t GetSavedCargenScenarioType(CCargen* cargen)
 	else
 	{
 		spdlog::warn("GetSavedScenarioType:: CARGEN {} NOT FOUND IN MAP ({}, {}, {})",
-			(void*)cargen, cargen->Position[0], cargen->Position[1],
-			cargen->Position[2]);
+			(void*)cargen, cargen->Position[0], cargen->Position[1], cargen->Position[2]);
 		LogStackTrace<2>();
 		return cargen->ScenarioType;
 	}
 }
 
-static void(*CCargen_Initialize_orig)(CCargen* cargen, int a2, int a3, int a4, float a5, float a6, uint32_t a7, int a8, int a9, int a10, int a11, int a12,
-									  int a13, int a14, int a15, int a16, int a17, int scenarioType, char a19, uint32_t* a20, char a21, char a22, char a23, char a24);
-static void CCargen_Initialize_detour(CCargen* cargen, int a2, int a3, int a4, float a5, float a6, uint32_t a7, int a8, int a9, int a10, int a11, int a12,
-									  int a13, int a14, int a15, int a16, int a17, int scenarioType, char a19, uint32_t* a20, char a21, char a22, char a23, char a24)
+static void(*CCargen_Initialize_orig)(CCargen* cargen, float x, float y, float z, float dirX, float dirY, float a7, int modelHash, int primaryColor, int secondaryColor,
+									  int pearlescentColor, int extraColor, int interiorColor, int accentColor, int unkFlag, int field30, int field38, int scenarioType,
+									  char unkFlag2, unsigned int *popGroup, char field3F, char field40, bool unkFlag4, char unkFlag3);
+static void CCargen_Initialize_detour(CCargen* cargen, float x, float y, float z, float dirX, float dirY, float a7, int modelHash, int primaryColor, int secondaryColor,
+									  int pearlescentColor, int extraColor, int interiorColor, int accentColor, int unkFlag, int field30, int field38, int scenarioType,
+									  char unkFlag2, unsigned int *popGroup, char field3F, char field40, bool unkFlag4, char unkFlag3)
 {
 	SaveCargen(cargen, scenarioType);
 
-	CCargen_Initialize_orig(cargen, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15, a16, a17, scenarioType, a19, a20, a21, a22, a23, a24);
+	CCargen_Initialize_orig(cargen, x,  y,  z,  dirX,  dirY,  a7, modelHash, primaryColor, secondaryColor,
+		pearlescentColor, extraColor, interiorColor, accentColor, unkFlag, field30, field38, scenarioType,
+		unkFlag2, popGroup, field3F, field40, unkFlag4, unkFlag3);
 }
 
 static void Patch27()
