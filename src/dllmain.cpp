@@ -346,6 +346,34 @@ static void Patch7()
 			hook::call_rcx(location, getScenarioTypeStub.GetCode());
 		});
 	}
+
+	static struct : jitasm::Frontend
+	{
+		void InternalMain() override
+		{
+			push(r8);
+			push(r9);
+			push(rdx);
+			sub(rsp, 0x20);
+
+			mov(rcx, rdi); // param: CScenarioPoint*
+			mov(rax, (uintptr_t)GetSavedScenarioType);
+			call(rax);
+			mov(r14d, eax);
+
+			add(rsp, 0x20);
+			pop(rdx);
+			pop(r9);
+			pop(r8);
+
+			ret();
+		}
+	} getScenarioTypeStub2;
+	{
+		auto location = hook::get_pattern("44 0F B6 77 ? 0F B7 4A 10 44 3B F1");
+		hook::nop(location, 0x5);
+		hook::call(location, getScenarioTypeStub2.GetCode());
+	}
 }
 
 static uint32_t GetFinalModelSetHash(uint32_t hash)
