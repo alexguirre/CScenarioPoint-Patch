@@ -2372,6 +2372,35 @@ static void Patch56()
 	hook::call(location, isVehicleInfoStub.GetCode());
 }
 
+static void Patch57()
+{
+	spdlog::info(__func__);
+
+	static struct : jitasm::Frontend
+	{
+		// TODO: verify that this patch is working
+		static uint32_t wrap(CScenarioPoint* p) { spdlog::info("Patch57:getScenarioTypeStub:{}:({}, {}, {})", (void*)p, p->vPositionAndDirection[0], p->vPositionAndDirection[1], p->vPositionAndDirection[2]); spdlog::default_logger()->flush(); return GetSavedScenarioType(p); }
+		void InternalMain() override
+		{
+			sub(rsp, 0x8);
+
+			mov(rcx, rdi); // param: CScenarioPoint*
+			mov(rax, (uintptr_t)wrap);
+			call(rax);
+			mov(ecx, eax); // save result
+
+			add(rsp, 0x8);
+
+			mov(rdx, r15);
+
+			ret();
+		}
+	} getScenarioTypeStub;
+	auto location = hook::get_pattern("0F B6 4F 15 49 8B D7 E8");
+	hook::nop(location, 0x7);
+	hook::call(location, getScenarioTypeStub.GetCode());
+}
+
 static DWORD WINAPI Main()
 {
 	if (EnableLogging)
@@ -2446,6 +2475,7 @@ static DWORD WINAPI Main()
 	Patch54();
 	Patch55();
 	Patch56();
+	Patch57();
 
 	MH_EnableHook(MH_ALL_HOOKS);
 
