@@ -2342,6 +2342,36 @@ static void Patch55()
 	hook::call(location, getScenarioTypeStub.GetCode());
 }
 
+static void Patch56()
+{
+	spdlog::info(__func__);
+
+	static struct : jitasm::Frontend
+	{
+		static bool IsVehicleInfo(CScenarioPoint* point)
+		{
+			return IsScenarioVehicleInfo(GetSavedScenarioType(point));
+		}
+
+		void InternalMain() override
+		{
+			sub(rsp, 0x8);
+
+			mov(rcx, rbx);   // param: CScenarioPoint*
+			mov(rax, (uintptr_t)IsVehicleInfo);
+			call(rax);
+
+			add(rsp, 0x8);
+
+			ret();
+		}
+	} isVehicleInfoStub;
+
+	auto location = hook::get_pattern("0F B6 4B 15 E8 ? ? ? ? 48 8D 4C 24");
+	hook::nop(location, 0x9);
+	hook::call(location, isVehicleInfoStub.GetCode());
+}
+
 static DWORD WINAPI Main()
 {
 	if (EnableLogging)
@@ -2415,6 +2445,7 @@ static DWORD WINAPI Main()
 	Patch53();
 	Patch54();
 	Patch55();
+	Patch56();
 
 	MH_EnableHook(MH_ALL_HOOKS);
 
