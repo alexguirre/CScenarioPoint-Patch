@@ -13,7 +13,11 @@
 #include <jitasm.h>
 #include <filesystem>
 
+#if _DEBUG
 static constexpr bool EnableLogging = true;
+#else
+static constexpr bool EnableLogging = false;
+#endif
 
 using IsScenarioVehicleInfo_fn = bool(*)(uint32_t index);
 using CAmbientModelSetsManager_FindIndexByHash_fn = uint32_t(*)(void* mgr, int type, uint32_t hash);
@@ -44,6 +48,7 @@ static void FindGameVariables()
 template<int FramesToSkip = 1>
 static void LogStackTrace()
 {
+#if _DEBUG
 	void* stack[32];
 	USHORT frames = CaptureStackBackTrace(FramesToSkip, 32, stack, NULL);
 
@@ -58,6 +63,7 @@ static void LogStackTrace()
 
 		spdlog::warn("\t\t{:16X} - {}+{:08X}", (uintptr_t)address, std::filesystem::path(moduleName).filename().string().c_str(), ((uintptr_t)address - (uintptr_t)module));
 	}
+#endif
 }
 
 struct ExtendedScenarioPoint
@@ -131,9 +137,6 @@ static void CScenarioPoint_TransformIdsToIndices_detour(CScenarioPointRegion::sL
 	atArray<uint32_t>* modelSetNames = IsScenarioVehicleInfo(scenarioIndex) ?
 										&indicesLookups->VehicleModelSetNames :
 										&indicesLookups->PedModelSetNames;
-
-	//spdlog::info(" TransformIdsToIndices:: detour -> point:{}, scenarioType:{:08X}, modelSet:{:08X}, modelSetId:{:X}, modelSetNamesCount:{:X}, modelSetNamesSize:{:X}",
-	//	(void*)point, scenarioIndex, modelSetNames->Items[point->ModelSetId], point->ModelSetId, modelSetNames->Count, modelSetNames->Size);
 
 	SavePoint(point, scenarioIndex, modelSetNames->Items[point->ModelSetId]);
 
@@ -240,29 +243,6 @@ static void Patch5()
 
 	// cmp against 0xFFFFFFF
 	hook::put(hook::get_pattern("41 81 FF ? ? ? ? 0F 85 ? ? ? ? B9", 3), 0xFFFFFFFF);
-}
-
-static bool(*CScenarioPoint_SetModelSet_orig)(CScenarioPoint*, uint32_t*, bool);
-static bool CScenarioPoint_SetModelSet_detour(CScenarioPoint* _this, uint32_t* modelSetHash, bool isVehicle)
-{
-	constexpr uint32_t usepopulation_hash = 0xA7548A2;
-
-	bool success = true;
-	uint32_t hash = *modelSetHash;
-	uint32_t index = 0xFFFFFFFF;
-	if (hash != usepopulation_hash)
-	{
-		index = CAmbientModelSetsManager_FindIndexByHash(*g_AmbientModelSetsMgr, isVehicle ? 2 : 0, hash);
-		if (index == 0xFFFFFFFF)
-		{
-			success = false;
-		}
-	}
-
-	SavePoint(_this, 0xDEADBEEF, index);
-	_this->ModelSetId = index;
-
-	return success;
 }
 
 static void(*CScenarioPoint_Delete_orig)(CScenarioPoint*);
@@ -485,8 +465,6 @@ static void Patch9()
 			int modelSetType = IsScenarioVehicleInfo(scenarioType) ? 2 : 0;
 			uint32_t modelSet = CAmbientModelSetsManager_FindIndexByHash(*g_AmbientModelSetsMgr, modelSetType, modelSetHash);
 
-			//spdlog::info("ctorWithEntity:: Save -> point:{}, spawnPoint:{}, scenarioType:{:08X}, modelSetHash:{:08X}, modelSet:{:08X}",
-			//	(void*)point, spawnPoint, scenarioType, modelSetHash, modelSet);
 			SavePoint(point, scenarioType, modelSet);
 
 			return modelSetHash;
@@ -542,10 +520,6 @@ static void CSpawnPointOverrideExtension_OverrideScenarioPoint_detour(char* spaw
 			uint32_t newModelSet = CAmbientModelSetsManager_FindIndexByHash(*g_AmbientModelSetsMgr, modelSetType, overrideModelSet);
 			p->second.ModelSetId = newModelSet;
 		}
-
-
-		//spdlog::info("OverrideScenarioPoint:: detour -> spawnPointOverrideExtension:{}, point:{}, iType:{:08X}, new_iType:{:08X}, ModelSetId:{:08X}, new_ModelSetId:{:08X}",
-		//	(void*)spawnPointOverrideExtension, (void*)point, origiType, p->second.iType, origModelSetId, p->second.ModelSetId);
 	}
 
 	CSpawnPointOverrideExtension_OverrideScenarioPoint_orig(spawnPointOverrideExtension, point);
