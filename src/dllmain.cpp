@@ -1332,8 +1332,6 @@ static void Patch35()
 
 	static struct : jitasm::Frontend
 	{
-		// TODO: verify that this patch is working
-		static uint32_t wrap(CScenarioPoint* p) { spdlog::info("Patch35:{}:({}, {}, {})", (void*)p, p->vPositionAndDirection[0], p->vPositionAndDirection[1], p->vPositionAndDirection[2]); spdlog::default_logger()->flush(); return GetSavedScenarioType(p); }
 		void InternalMain() override
 		{
 			push(r8);
@@ -1342,7 +1340,7 @@ static void Patch35()
 			sub(rsp, 0x20);
 
 			lea(rcx, qword_ptr[rbp + 0x57 - 0x70]); // param: CScenarioPoint*
-			mov(rax, (uintptr_t)wrap);
+			mov(rax, (uintptr_t)GetSavedScenarioType);
 			call(rax);
 			mov(r12d, eax);
 
