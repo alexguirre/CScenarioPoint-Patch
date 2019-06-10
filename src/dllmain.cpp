@@ -2063,18 +2063,20 @@ static void Patch50()
 
 	static struct : jitasm::Frontend
 	{
-		// TODO: verify that this patch is working
-		static uint32_t wrap(CScenarioPoint* c) { spdlog::info("Patch50:getScenarioTypeStub:{}:({}, {}, {})", (void*)c, c->vPositionAndDirection[0], c->vPositionAndDirection[1], c->vPositionAndDirection[2]); spdlog::default_logger()->flush(); return GetSavedScenarioType(c); }
 		void InternalMain() override
 		{
-			sub(rsp, 0x8);
+			push(r8);
+			push(r9);
+			sub(rsp, 0x18);
 
 			lea(rcx, qword_ptr[rbp - 0x80]); // param: CScenarioPoint*
-			mov(rax, (uintptr_t)wrap);
+			mov(rax, (uintptr_t)GetSavedScenarioType);
 			call(rax);
 			mov(ecx, eax);
 
-			add(rsp, 0x8);
+			add(rsp, 0x18);
+			pop(r9);
+			pop(r8);
 
 			ret();
 		}
