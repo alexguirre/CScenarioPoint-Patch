@@ -2,11 +2,27 @@
 <Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup>
     <ClCompile Include="dllmain.cpp" />
-    <ClCompile Include="Hooking.Patterns.cpp" />
     <ClCompile Include="Hooking.cpp" />
+    <ClCompile Include="..\dependencies\minhook\src\buffer.c">
+      <Filter>dependencies\minhook</Filter>
+    </ClCompile>
+    <ClCompile Include="..\dependencies\minhook\src\hook.c">
+      <Filter>dependencies\minhook</Filter>
+    </ClCompile>
+    <ClCompile Include="..\dependencies\minhook\src\trampoline.c">
+      <Filter>dependencies\minhook</Filter>
+    </ClCompile>
+    <ClCompile Include="..\dependencies\minhook\src\hde\hde32.c">
+      <Filter>dependencies\minhook</Filter>
+    </ClCompile>
+    <ClCompile Include="..\dependencies\minhook\src\hde\hde64.c">
+      <Filter>dependencies\minhook</Filter>
+    </ClCompile>
+    <ClCompile Include="..\dependencies\patterns\Hooking.Patterns.cpp">
+      <Filter>dependencies\patterns</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="Hooking.Patterns.h" />
     <ClInclude Include="Hooking.h" />
     <ClInclude Include="CScenarioPoint.h" />
     <ClInclude Include="CScenarioPointRegion.h" />
@@ -15,5 +31,16 @@
     <ClInclude Include="CScenarioInfoManager.h" />
     <ClInclude Include="CScenarioTypeGroup.h" />
     <ClInclude Include="CCargen.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <Filter Include="dependencies">
+      <UniqueIdentifier>{fdc29b77-a286-4f93-ada3-3fa5cb3d5eb2}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="dependencies\minhook">
+      <UniqueIdentifier>{f4624e84-9160-48fe-b85e-74688dd91c94}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="dependencies\patterns">
+      <UniqueIdentifier>{2d65f738-a7bf-4f07-8817-9b473cf806ec}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
 </Project>
