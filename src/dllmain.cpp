@@ -375,7 +375,11 @@ static void Patch8()
 		static int Save(CScenarioPoint* point, char* extensionDefSpawnPoint, CScenarioInfoManager* scenarioInfoMgr)
 		{
 			uint32_t spawnType = *(uint32_t*)(extensionDefSpawnPoint + 0x30);
-			int scenarioType = CScenarioInfoManager_GetScenarioTypeByHash(scenarioInfoMgr, &spawnType, true, true);
+			uint32_t scenarioType = CScenarioInfoManager_GetScenarioTypeByHash(scenarioInfoMgr, &spawnType, true, true);
+			if (scenarioType == 0xFFFFFFFF)
+			{
+				scenarioType = 0;
+			}
 
 			uint32_t pedType = *(uint32_t*)(extensionDefSpawnPoint + 0x34);
 			uint32_t modelSetHash = GetFinalModelSetHash(pedType);
@@ -421,6 +425,10 @@ static void CSpawnPoint_InitFromDef_detour(void* spawnPoint, char* extensionDefS
 {
 	uint32_t spawnType = *(uint32_t*)(extensionDefSpawnPoint + 0x30);
 	uint32_t scenarioType = CScenarioInfoManager_GetScenarioTypeByHash(*g_ScenarioInfoMgr, &spawnType, true, true);
+	if (scenarioType == 0xFFFFFFFF)
+	{
+		scenarioType = 0;
+	}
 
 	g_SpawnPointsScenarioTypes[spawnPoint] = scenarioType;
 
