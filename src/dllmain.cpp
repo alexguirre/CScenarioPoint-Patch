@@ -14,9 +14,9 @@
 #include <filesystem>
 
 #if _DEBUG
-static constexpr bool EnableLogging = true;
+static constexpr bool DefaultEnableLogging = true;
 #else
-static constexpr bool EnableLogging = false;
+static constexpr bool DefaultEnableLogging = false;
 #endif
 
 using IsScenarioVehicleInfo_fn = bool(*)(uint32_t index);
@@ -2435,9 +2435,17 @@ static void Patch59()
 	hook::call(location, getScenarioTypeStub.GetCode());
 }
 
+static bool ShouldEnableLogging()
+{
+	char iniFilePath[MAX_PATH];
+	GetFullPathName("CScenarioPoint-Patch.ini", MAX_PATH, iniFilePath, nullptr);
+	int v = GetPrivateProfileInt("Config", "Log", 0, iniFilePath);
+	return v != 0;
+}
+
 static DWORD WINAPI Main()
 {
-	if (EnableLogging)
+	if (DefaultEnableLogging || ShouldEnableLogging())
 	{
 		spdlog::set_default_logger(spdlog::basic_logger_mt("file_logger", "CScenarioPoint-Patch.log"));
 		spdlog::flush_every(std::chrono::seconds(5));
