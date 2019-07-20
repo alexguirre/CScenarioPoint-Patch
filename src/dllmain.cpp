@@ -19,6 +19,18 @@ static constexpr bool DefaultEnableLogging = true;
 static constexpr bool DefaultEnableLogging = false;
 #endif
 
+static bool LoggingEnabled()
+{
+	static bool b = []()
+	{
+		char iniFilePath[MAX_PATH];
+		GetFullPathName("CScenarioPoint-Patch.ini", MAX_PATH, iniFilePath, nullptr);
+		int v = GetPrivateProfileInt("Config", "Log", 0, iniFilePath);
+		return v != 0;
+	}();
+	return DefaultEnableLogging || b;
+}
+
 using IsScenarioVehicleInfo_fn = bool(*)(uint32_t index);
 using CAmbientModelSetsManager_FindIndexByHash_fn = uint32_t(*)(void* mgr, int type, uint32_t hash);
 using CScenarioInfoManager_GetScenarioTypeByHash_fn = uint32_t(*)(CScenarioInfoManager* mgr, uint32_t* name, bool a3, bool searchInScenarioTypeGroups);
@@ -64,6 +76,53 @@ static void LogStackTrace()
 		spdlog::warn("\t\t{:16X} - {}+{:08X}", (uintptr_t)address, std::filesystem::path(moduleName).filename().string().c_str(), ((uintptr_t)address - (uintptr_t)module));
 	}
 #endif
+}
+
+static void LogDefSpawnPointError(const char* at, const char* reason, char* extensionDefSpawnPoint)
+{
+	if (!LoggingEnabled())
+	{
+		return;
+	}
+
+	spdlog::info(
+		"at {}:\n"
+		"	{}:\n"
+		"		offsetPosition:		{}, {}, {}\n"
+		"		offsetRotation:		{}, {}, {}, {}\n"
+		"		spawnType:			{:08X}\n"
+		"		pedType:			{:08X}\n"
+		"		group:				{:08X}\n"
+		"		interior:			{:08X}\n"
+		"		requiredImap:		{:08X}\n"
+		"		availableInMpSp:	{}\n"
+		"		probability:		{}\n"
+		"		timeTillPedLeaves:	{}\n"
+		"		radius:				{}\n"
+		"		start:				{}\n"
+		"		end:				{}\n"
+		"		flags:				{:08X}\n"
+		"		highPri:			{}\n"
+		"		extendedRange:		{}\n"
+		"		shortRange:			{}\n",
+		at, reason,
+		*(float*)(extensionDefSpawnPoint + 0x10), *(float*)(extensionDefSpawnPoint + 0x14), *(float*)(extensionDefSpawnPoint + 0x18),
+		*(float*)(extensionDefSpawnPoint + 0x20), *(float*)(extensionDefSpawnPoint + 0x24), *(float*)(extensionDefSpawnPoint + 0x28), *(float*)(extensionDefSpawnPoint + 0x2C),
+		*(uint32_t*)(extensionDefSpawnPoint + 0x30),
+		*(uint32_t*)(extensionDefSpawnPoint + 0x34),
+		*(uint32_t*)(extensionDefSpawnPoint + 0x38),
+		*(uint32_t*)(extensionDefSpawnPoint + 0x3C),
+		*(uint32_t*)(extensionDefSpawnPoint + 0x40),
+		*(uint32_t*)(extensionDefSpawnPoint + 0x44),
+		*(float*)(extensionDefSpawnPoint + 0x48),
+		*(float*)(extensionDefSpawnPoint + 0x4C),
+		*(float*)(extensionDefSpawnPoint + 0x50),
+		*(uint8_t*)(extensionDefSpawnPoint + 0x54),
+		*(uint8_t*)(extensionDefSpawnPoint + 0x55),
+		*(uint32_t*)(extensionDefSpawnPoint + 0x58),
+		(*(bool*)(extensionDefSpawnPoint + 0x5C) ? "true" : "false"),
+		(*(bool*)(extensionDefSpawnPoint + 0x5D) ? "true" : "false"),
+		(*(bool*)(extensionDefSpawnPoint + 0x5E) ? "true" : "false"));
 }
 
 struct ExtendedScenarioPoint
@@ -379,6 +438,11 @@ static void Patch8()
 			if (scenarioType == 0xFFFFFFFF)
 			{
 				scenarioType = 0;
+
+				LogDefSpawnPointError(
+					"CScenarioPoint::InitFromSpawnPointDef",
+					"CExtensionDefSpawnPoint has invalid spawnType",
+					extensionDefSpawnPoint);
 			}
 
 			uint32_t pedType = *(uint32_t*)(extensionDefSpawnPoint + 0x34);
@@ -428,6 +492,11 @@ static void CSpawnPoint_InitFromDef_detour(void* spawnPoint, char* extensionDefS
 	if (scenarioType == 0xFFFFFFFF)
 	{
 		scenarioType = 0;
+
+		LogDefSpawnPointError(
+			"CSpawnPoint::InitFromDef",
+			"CExtensionDefSpawnPoint has invalid spawnType",
+			extensionDefSpawnPoint);
 	}
 
 	g_SpawnPointsScenarioTypes[spawnPoint] = scenarioType;
@@ -516,7 +585,16 @@ static void CSpawnPointOverrideExtension_OverrideScenarioPoint_detour(char* spaw
 		{
 			uint32_t newScenarioType = CScenarioInfoManager_GetScenarioTypeByHash(*g_ScenarioInfoMgr, &overrideScenarioType, true, true);
 			if (newScenarioType == 0xFFFFFFFF)
+			{
 				newScenarioType = 0;
+				spdlog::info("SpawnPointOverrideExtension has invalid scenarioType\n"
+					"point pos: {} {} {}\n"
+					"scenarioType: {:08X}",
+					point->vPositionAndDirection[0],
+					point->vPositionAndDirection[1],
+					point->vPositionAndDirection[2],
+					overrideScenarioType);
+			}
 			p->second.iType = newScenarioType;
 		}
 
@@ -2435,17 +2513,9 @@ static void Patch59()
 	hook::call(location, getScenarioTypeStub.GetCode());
 }
 
-static bool ShouldEnableLogging()
-{
-	char iniFilePath[MAX_PATH];
-	GetFullPathName("CScenarioPoint-Patch.ini", MAX_PATH, iniFilePath, nullptr);
-	int v = GetPrivateProfileInt("Config", "Log", 0, iniFilePath);
-	return v != 0;
-}
-
 static DWORD WINAPI Main()
 {
-	if (DefaultEnableLogging || ShouldEnableLogging())
+	if (LoggingEnabled())
 	{
 		spdlog::set_default_logger(spdlog::basic_logger_mt("file_logger", "CScenarioPoint-Patch.log"));
 		spdlog::flush_every(std::chrono::seconds(5));
