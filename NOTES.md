@@ -34,7 +34,8 @@ Addresses shown here are from v1011 retail.
   * compares modelSetIndex against 0xFF -> should be 0xFFFFFFFF
 
 * void CScenarioPoint::Delete(CScenarioPoint *a1) | Patch6
-  * can be used to remove CScenarioPoints from our map
+  * ~~can be used to remove CScenarioPoints from our map~~
+  * not reliable enough, when reloading the game this function is called but then the points are reused without calling the functions where we store the CScenarioPoints data, so if we remove them here the patch loses track of them causing a bunch of errors in the log and in some cases crashes.
 
 * sub_BEA384 && sub_BF99BC | Patch7
   * accesses CScenarioPoint::ModelSetid, both in the same way
