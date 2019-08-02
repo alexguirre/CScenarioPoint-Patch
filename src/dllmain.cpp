@@ -60,7 +60,11 @@ static void FindGameVariables()
 template<int FramesToSkip = 1>
 static void LogStackTrace()
 {
-#if _DEBUG
+	if (!LoggingEnabled())
+	{
+		return;
+	}
+
 	void* stack[32];
 	USHORT frames = CaptureStackBackTrace(FramesToSkip, 32, stack, NULL);
 
@@ -75,7 +79,6 @@ static void LogStackTrace()
 
 		spdlog::warn("\t\t{:16X} - {}+{:08X}", (uintptr_t)address, std::filesystem::path(moduleName).filename().string().c_str(), ((uintptr_t)address - (uintptr_t)module));
 	}
-#endif
 }
 
 static void LogDefSpawnPointError(const char* at, const char* reason, char* extensionDefSpawnPoint)
