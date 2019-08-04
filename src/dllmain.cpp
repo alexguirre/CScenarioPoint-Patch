@@ -1248,7 +1248,6 @@ static void Patch28()
 {
 	spdlog::info(__func__);
 
-	// CCargen::Initialize
 	MH_CreateHook(hook::get_pattern("48 85 D2 74 7E 48 89 5C 24 ? 48 89 6C 24"), DeleteCargenFromPool_detour, (void**)&DeleteCargenFromPool_orig);
 }
 
@@ -1547,9 +1546,13 @@ static void Patch38()
 
 		void InternalMain() override
 		{
+			sub(rsp, 0x8);
+
 			mov(rcx, rbx); // param: CCargen*
 			mov(rax, (uintptr_t)GetSavedCargenScenarioType);
 			call(rax);
+
+			add(rsp, 0x8);
 
 			cmp(eax, 0xFFFFFFFF);
 			jz("doJump");
@@ -1613,13 +1616,13 @@ static void Patch40()
 		{
 			push(r8);
 			push(r9);
-			sub(rsp, 0x10);
+			sub(rsp, 0x18);
 
 			mov(rcx, rbx); // param: CCargen*
 			mov(rax, (uintptr_t)GetSavedCargenScenarioType);
 			call(rax);
 
-			add(rsp, 0x10);
+			add(rsp, 0x18);
 			pop(r9);
 			pop(r8);
 
@@ -1659,13 +1662,13 @@ static void Patch41()
 			push(r8);
 			push(r9);
 			push(rcx);
-			sub(rsp, 0x18);
+			sub(rsp, 0x20);
 
 			// rcx already is CCargen*
 			mov(rax, (uintptr_t)GetSavedCargenScenarioType);
 			call(rax);
 
-			add(rsp, 0x18);
+			add(rsp, 0x20);
 			pop(rcx);
 			pop(r9);
 			pop(r8);
@@ -1754,13 +1757,13 @@ static void Patch42()
 		{
 			push(r8);
 			push(r9);
-			sub(rsp, 0x10);
+			sub(rsp, 0x18);
 
 			mov(rcx, rdi); // param: CCargen*
 			mov(rax, (uintptr_t)GetSavedCargenScenarioType);
 			call(rax);
 
-			add(rsp, 0x10);
+			add(rsp, 0x18);
 			pop(r9);
 			pop(r8);
 
@@ -1806,9 +1809,13 @@ static void Patch43()
 
 		void InternalMain() override
 		{
+			sub(rsp, 0x8);
+
 			mov(rcx, rbx); // param: CCargen*
 			mov(rax, (uintptr_t)GetSavedCargenScenarioType);
 			call(rax);
+
+			add(rsp, 0x8);
 
 			cmp(eax, 0xFFFFFFFF);
 			jz("doJump");
@@ -1843,13 +1850,13 @@ static void Patch44()
 		{
 			push(r8);
 			push(r9);
-			sub(rsp, 0x10);
+			sub(rsp, 0x18);
 
 			mov(rcx, rbx); // param: CCargen*
 			mov(rax, (uintptr_t)GetSavedCargenScenarioType);
 			call(rax);
 
-			add(rsp, 0x10);
+			add(rsp, 0x18);
 			pop(r9);
 			pop(r8);
 
@@ -1901,13 +1908,13 @@ static void Patch45()
 		{
 			push(r8);
 			push(r9);
-			sub(rsp, 0x10);
+			sub(rsp, 0x18);
 
 			mov(rcx, rbx); // param: CCargen*
 			mov(rax, (uintptr_t)GetSavedCargenScenarioType);
 			call(rax);
 
-			add(rsp, 0x10);
+			add(rsp, 0x18);
 			pop(r9);
 			pop(r8);
 
@@ -1965,14 +1972,14 @@ static void Patch45()
 			push(r8);
 			push(r9);
 			push(rax);
-			sub(rsp, 0x18);
+			sub(rsp, 0x20);
 
 			mov(rcx, rbx); // param: CCargen*
 			mov(rax, (uintptr_t)GetSavedCargenScenarioType);
 			call(rax);
 			mov(ecx, eax); // save return value
 
-			add(rsp, 0x18);
+			add(rsp, 0x20);
 			pop(rax);
 			pop(r9);
 			pop(r8);
@@ -2039,13 +2046,13 @@ static void Patch47()
 		{
 			push(rcx);
 			push(rdx);
-			sub(rsp, 0x10);
+			sub(rsp, 0x18);
 
 			// rcx already is CCargen*
 			mov(rax, (uintptr_t)wrap);
 			call(rax);
 
-			add(rsp, 0x10);
+			add(rsp, 0x18);
 			pop(rdx);
 			pop(rcx);
 
@@ -2070,9 +2077,13 @@ static void Patch47()
 		static uint32_t wrap(CCargen* c) { spdlog::info("Patch47:cmpScenarioTypeStub2:{}:({}, {}, {})", (void*)c, c->Position[0], c->Position[1], c->Position[2]); spdlog::default_logger()->flush(); return GetSavedCargenScenarioType(c); }
 		void InternalMain() override
 		{
+			sub(rsp, 0x8);
+
 			mov(rcx, rdi); // param: CCargen*
 			mov(rax, (uintptr_t)wrap);
 			call(rax);
+
+			add(rsp, 0x8);
 
 			cmp(eax, 0xFFFFFFFF);
 			jz("doJump");
@@ -2289,9 +2300,13 @@ static void Patch53()
 
 		void InternalMain() override
 		{
+			sub(rsp, 0x8);
+
 			mov(rcx, r14); // param: CCargen*
 			mov(rax, (uintptr_t)GetSavedCargenScenarioType);
 			call(rax);
+
+			add(rsp, 0x8);
 
 			cmp(eax, 0xFFFFFFFF);
 			ifZero ? jz("doJump") : jnz("doJump");
@@ -2330,7 +2345,7 @@ static void Patch53()
 			hook::get_pattern("48 8D 4D B0 E8 ? ? ? ? 48 8D 55 C0 49 8B CE"),
 			false
 		);
-		auto location = hook::get_pattern("41 80 7E ? ? 75 17");
+		auto location = hook::get_pattern("41 80 7E ? ? 75 17 40 38 3D ? ? ? ? 74 05");
 		hook::nop(location, 0x7);
 		hook::jump(location, stub.GetCode());
 	}
