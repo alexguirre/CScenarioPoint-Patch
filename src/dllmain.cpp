@@ -645,13 +645,14 @@ static void Patch11()
 
 		void InternalMain() override
 		{
-			sub(rsp, 0x8);
+			push(r8);
+			push(r9);
+
+			sub(rsp, 0x18);
 
 			// rcx already is CScenarioPoint*
 			mov(rax, (uintptr_t)GetSavedScenarioType);
 			call(rax);
-
-			add(rsp, 0x8);
 
 			switch (m_reg)
 			{
@@ -660,7 +661,12 @@ static void Patch11()
 			case ECX_REG: mov(ecx, eax); break;
 			case ESI_REG: mov(esi, eax); break;
 			}
-			
+
+			add(rsp, 0x18);
+
+			pop(r9);
+			pop(r8);
+
 			ret();
 		}
 	};
@@ -1318,7 +1324,7 @@ static void Patch32()
 			pop(r9);
 			pop(r8);
 
-			lea(rdx, qword_ptr[rsp + 0x30]);
+			lea(rdx, qword_ptr[rsp + 0x38]);
 			ret();
 		}
 	} getScenarioTypeStub;
@@ -2193,15 +2199,24 @@ static void Patch51()
 	{
 		void InternalMain() override
 		{
-			sub(rsp, 0x8);
+			push(rcx);
+			push(rdx);
+			push(r8);
+			push(r9);
+			sub(rsp, 0x30);
 
 			mov(rcx, rbx); // param: CCargen*
 			mov(rax, (uintptr_t)GetSavedCargenScenarioType);
 			call(rax);
 
-			add(rsp, 0x8);
+			add(rsp, 0x30);
+			pop(r9);
+			pop(r8);
+			pop(rdx);
+			pop(rcx);
 
 			cmp(eax, 0xFFFFFFFF);
+
 			// workaround since jitasm doesn't have `sil` register, so can't do `setnz(sil)`
 			jnz("set");	
 			mov(esi, 0);
