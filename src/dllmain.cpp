@@ -3,14 +3,9 @@
 #include <spdlog/sinks/basic_file_sink.h>
 #include "Hooking.Patterns.h"
 #include "Hooking.h"
-#include "CScenarioInfo.h"
 #include "CScenarioPoint.h"
 #include "CScenarioPointRegion.h"
-#include "CScenarioInfoManager.h"
-#include "CCargen.h"
-#include <unordered_map>
 #include <MinHook.h>
-#include <jitasm.h>
 #include <filesystem>
 #include <iterator>
 
