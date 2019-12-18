@@ -87,6 +87,18 @@ static uint16_t GetPointModelSet(CScenarioPoint* point)
 	return *reinterpret_cast<uint16_t*>(reinterpret_cast<char*>(point) + ModelSetIdOffset);
 }
 
+static void CheckPointModelSet(CScenarioPoint* point, uint32_t modelSetId)
+{
+	if (modelSetId > 0xFFFF)
+	{
+		spdlog::warn("Scenario Point (addr:{}; X:{:.2f},Y:{:.2f},Z:{:.2f}) with modelset (ID:{}) > 0xFFFF",
+			reinterpret_cast<void*>(point),
+			point->vPositionAndDirection[0], point->vPositionAndDirection[1], point->vPositionAndDirection[2],
+			modelSetId);
+		LogStackTrace();
+	}
+}
+
 static void Patch1()
 {
 	spdlog::info(__func__);
@@ -104,11 +116,7 @@ static void CScenarioPoint_TransformIdsToIndices_detour(CScenarioPointRegion::sL
 		&indicesLookups->PedModelSetNames;
 
 	const uint32_t modelSet = modelSetNames->Items[point->ModelSetId];
-	if (modelSet > 0xFFFF)
-	{
-		spdlog::warn("point ({}) with modelset ({}) > 0xFFFF", reinterpret_cast<void*>(point), modelSet);
-		LogStackTrace();
-	}
+	CheckPointModelSet(point, modelSet);
 
 	CScenarioPoint_TransformIdsToIndices_orig(indicesLookups, point);
 
@@ -239,14 +247,9 @@ bool CScenarioPoint_SetModelSet_detour(CScenarioPoint* This, const uint32_t* mod
 		}
 		else
 		{
+			CheckPointModelSet(This, modelSetIndex);
 			modelSetId = static_cast<uint16_t>(modelSetIndex);
 		}
-	}
-
-	if (modelSetId > 0xFFFF)
-	{
-		spdlog::warn("point ({}) with modelset ({}) > 0xFFFF", reinterpret_cast<void*>(This), modelSetId);
-		LogStackTrace();
 	}
 
 	This->ModelSetId = static_cast<uint8_t>(modelSetId);
