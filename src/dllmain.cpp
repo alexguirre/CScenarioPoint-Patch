@@ -69,32 +69,63 @@ static void LogStackTrace()
 	}
 }
 
-/// The CScenarioPoint offset where we are going to store the ModelSetId,
+/// The CScenarioPoint offset where we are going to store the ModelSetId as uint16,
 /// 2 bytes (which previously were padding) instead of 1 byte.
-constexpr ptrdiff_t ModelSetIdOffset{ offsetof(CScenarioPoint, padding_22) };
-static_assert(ModelSetIdOffset < 0xFF);
+constexpr ptrdiff_t Offset_ModelSetId{ offsetof(CScenarioPoint, padding_22) };
+static_assert(Offset_ModelSetId < 0xFF);
 
 constexpr uint16_t InvalidModelSetId{ 0xFFFF };
 
+/// The CScenarioPoint offsets where we are going to store the iType as uint16,
+/// the low byte in the original offset and the high byte in 1 byte of padding.
+constexpr ptrdiff_t Offset_iTypeLo{ offsetof(CScenarioPoint, iType) };
+constexpr ptrdiff_t Offset_iTypeHi{ offsetof(CScenarioPoint, padding_1F) };
+static_assert(Offset_iTypeLo < 0xFF);
+static_assert(Offset_iTypeHi < 0xFF);
+
 static void SetPointModelSet(CScenarioPoint* point, uint16_t modelSetId)
 {
-	// use 2 bytes of padding to store the model set
-	*reinterpret_cast<uint16_t*>(reinterpret_cast<char*>(point)  + ModelSetIdOffset) = modelSetId;
+	*reinterpret_cast<uint16_t*>(reinterpret_cast<char*>(point)  + Offset_ModelSetId) = modelSetId;
 }
 
 static uint16_t GetPointModelSet(CScenarioPoint* point)
 {
-	return *reinterpret_cast<uint16_t*>(reinterpret_cast<char*>(point) + ModelSetIdOffset);
+	return *reinterpret_cast<uint16_t*>(reinterpret_cast<char*>(point) + Offset_ModelSetId);
 }
 
 static void CheckPointModelSet(CScenarioPoint* point, uint32_t modelSetId)
 {
 	if (modelSetId > 0xFFFF)
 	{
-		spdlog::warn("Scenario Point (addr:{}; X:{:.2f},Y:{:.2f},Z:{:.2f}) with modelset (ID:{}) > 0xFFFF",
+		spdlog::warn("Scenario Point (addr:{}; X:{:.2f},Y:{:.2f},Z:{:.2f}) with ModelSetId (ID:{}) > 0xFFFF",
 			reinterpret_cast<void*>(point),
 			point->vPositionAndDirection[0], point->vPositionAndDirection[1], point->vPositionAndDirection[2],
 			modelSetId);
+		LogStackTrace();
+	}
+}
+
+static void SetPointScenarioType(CScenarioPoint* point, uint16_t type)
+{
+	*reinterpret_cast<uint8_t*>(reinterpret_cast<char*>(point) + Offset_iTypeLo) = type & 0xFF;
+	*reinterpret_cast<uint8_t*>(reinterpret_cast<char*>(point) + Offset_iTypeHi) = type >> 8;
+}
+
+static uint16_t GetPointScenarioType(CScenarioPoint* point)
+{
+	const uint16_t lo = *reinterpret_cast<uint8_t*>(reinterpret_cast<char*>(point) + Offset_iTypeLo);
+	const uint16_t hi = *reinterpret_cast<uint8_t*>(reinterpret_cast<char*>(point) + Offset_iTypeHi);
+	return (hi << 8) | lo;
+}
+
+static void CheckPointScenarioType(CScenarioPoint* point, uint32_t type)
+{
+	if (type > 0xFFFF)
+	{
+		spdlog::warn("Scenario Point (addr:{}; X:{:.2f},Y:{:.2f},Z:{:.2f}) with iType (ID:{}) > 0xFFFF",
+			reinterpret_cast<void*>(point),
+			point->vPositionAndDirection[0], point->vPositionAndDirection[1], point->vPositionAndDirection[2],
+			type);
 		LogStackTrace();
 	}
 }
@@ -150,10 +181,10 @@ static void Patch4()
 	movzx   edx, byte ptr [rcx+16h]                 0F B6 51 16
 		|
 		v
-	movzx   edx, word ptr [rcx+ModelSetIdOffset]    0F B7 51 offset
+	movzx   edx, word ptr [rcx+Offset_ModelSetId]    0F B7 51 offset
 	*/
 	hook::put<uint8_t>(loc + 1, 0xB7);
-	hook::put<uint8_t>(loc + 3, ModelSetIdOffset);
+	hook::put<uint8_t>(loc + 3, Offset_ModelSetId);
 
 	/*
 	mov     edx, 0FFh                               BA FF 00 00 00
@@ -184,10 +215,10 @@ static void Patch5()
 	movzx   r15d, byte ptr [r14+16h]                45 0F B6 7E 16
 		|
 		v
-	movzx   r15d, word ptr [r14+ModelSetIdOffset]   45 0F B7 7E offset
+	movzx   r15d, word ptr [r14+Offset_ModelSetId]   45 0F B7 7E offset
 	*/
 	hook::put<uint8_t>(loc + 12 + 2, 0xB7);
-	hook::put<uint8_t>(loc + 12 + 4, ModelSetIdOffset);
+	hook::put<uint8_t>(loc + 12 + 4, Offset_ModelSetId);
 
 	/*
 	cmp     r15d, 0FFh                              41 81 FF FF 00 00 00
@@ -208,10 +239,10 @@ static void Patch7()
 	movzx   eax, byte ptr [rdi+16h]                 0F B6 47 16
 		|
 		v
-	movzx   eax, word ptr [rdi+ModelSetIdOffset]    0F B7 47 offset
+	movzx   eax, word ptr [rdi+Offset_ModelSetId]    0F B7 47 offset
 	*/
 	hook::put<uint8_t>(loc + 1, 0xB7);
-	hook::put<uint8_t>(loc + 3, ModelSetIdOffset);
+	hook::put<uint8_t>(loc + 3, Offset_ModelSetId);
 
 	/*
 	cmp     eax, 0FFh                               3D FF 00 00 00
@@ -281,10 +312,10 @@ static void Patch24()
 		movzx   edx, byte ptr [rbx+16h]                 0F B6 53 16
 			|
 			v
-		movzx   edx, word ptr [rbx+ModelSetIdOffset]    0F B7 53 offset
+		movzx   edx, word ptr [rbx+Offset_ModelSetId]    0F B7 53 offset
 		*/
 		hook::put<uint8_t>(loc + 1, 0xB7);
-		hook::put<uint8_t>(loc + 3, ModelSetIdOffset);
+		hook::put<uint8_t>(loc + 3, Offset_ModelSetId);
 	});
 }
 
@@ -319,10 +350,10 @@ static void Patch33()
 	movzx   eax, byte ptr [r13+16h]                 41 0F B6 45 16
 		|
 		v
-	movzx   eax, word ptr [r13+ModelSetIdOffset]    41 0F B7 45 offset
+	movzx   eax, word ptr [r13+Offset_ModelSetId]    41 0F B7 45 offset
 	*/
 	hook::put<uint8_t>(loc + 2, 0xB7);
-	hook::put<uint8_t>(loc + 4, ModelSetIdOffset);
+	hook::put<uint8_t>(loc + 4, Offset_ModelSetId);
 
 	/*
 	cmp     eax, 0FFh                               3D FF 00 00 00
@@ -346,14 +377,14 @@ static void Patch49()
 	                                                                  ; so we can overwrite it and nop the remaining bytes
 		|
 		v
-	cmp     word ptr [r14+ModelSetIdOffset], 0FFFFh    66 41 83 7E offset FF
+	cmp     word ptr [r14+Offset_ModelSetId], 0FFFFh    66 41 83 7E offset FF
 	nop                                                90
 	nop                                                90
 	nop                                                90
 	*/
 	const uint8_t patch[9]
 	{
-		0x66, 0x41, 0x83, 0x7E, ModelSetIdOffset, 0xFF,
+		0x66, 0x41, 0x83, 0x7E, Offset_ModelSetId, 0xFF,
 		0x90, 0x90, 0x90
 	};
 	memcpy(loc, patch, std::size(patch));
