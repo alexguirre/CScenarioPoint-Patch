@@ -266,8 +266,8 @@ static uint32_t GetFinalModelSetHash(uint32_t hash)
 	return hash == any_hash ? usepopulation_hash : hash;
 }
 
-bool(*CScenarioPoint_SetModelSet_orig)(CScenarioPoint* This, const uint32_t* modelSetHash, bool isVehicle);
-bool CScenarioPoint_SetModelSet_detour(CScenarioPoint* This, const uint32_t* modelSetHash, bool isVehicle)
+static bool(*CScenarioPoint_SetModelSet_orig)(CScenarioPoint* This, const uint32_t* modelSetHash, bool isVehicle);
+static bool CScenarioPoint_SetModelSet_detour(CScenarioPoint* This, const uint32_t* modelSetHash, bool isVehicle)
 {
 	constexpr uint32_t usepopulation_hash = 0xA7548A2;
 
