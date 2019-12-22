@@ -8,6 +8,7 @@
 #include <MinHook.h>
 #include <filesystem>
 #include <iterator>
+#include <chrono>
 
 #if _DEBUG
 static constexpr bool DefaultEnableLogging = true;
@@ -1391,7 +1392,11 @@ static DWORD WINAPI Main()
 		spdlog::set_level(spdlog::level::off);
 	}
 
-	spdlog::info("Initializing MinHook...");
+
+	spdlog::info("Initializing...");
+
+	const auto startTime = std::chrono::steady_clock::now();
+	
 	MH_Initialize();
 
 	FindGameFunctions();
@@ -1444,7 +1449,9 @@ static DWORD WINAPI Main()
 
 	MH_EnableHook(MH_ALL_HOOKS);
 
-	spdlog::info("Initialization finished");
+	const auto endTime = std::chrono::steady_clock::now();
+
+	spdlog::info("Initialization finished - Took {} ms", std::chrono::duration_cast<std::chrono::milliseconds>(endTime - startTime).count());
 	return 1;
 }
 
