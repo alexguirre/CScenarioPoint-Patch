@@ -530,7 +530,6 @@ static void Patch53()
 	spdlog::info(__func__);
 
 	// CScenarioPoint::ctorWithEntity
-	auto loc = hook::get_pattern<uint8_t>("81 E1 ? ? ? ? 88 4B 15 8B C1");
 
 	/*
 	ecx = scenario type index
@@ -551,13 +550,48 @@ static void Patch53()
 	shr     ecx, 8                                     C1 E9 08
 	mov     [rbx+Offset_iTypeHi], cl                   88 4B offset
 	*/
-	const uint8_t patch[9]
 	{
-		0x88, 0x4B, Offset_iTypeLo,
-		0xC1, 0xE9, 0x08,
-		0x88, 0x4B, Offset_iTypeHi,
-	};
-	hook::patch_and_nop_remaining<32>(loc, patch);
+		auto loc = hook::get_pattern<uint8_t>("81 E1 ? ? ? ? 88 4B 15 8B C1");
+		const uint8_t patch[9]
+		{
+			0x88, 0x4B, Offset_iTypeLo,
+			0xC1, 0xE9, 0x08,
+			0x88, 0x4B, Offset_iTypeHi,
+		};
+		hook::patch_and_nop_remaining<32>(loc, patch);
+	}
+
+	/*
+	movzx   ecx, word ptr [rbx+10h]                    0F B7 4B 10
+	shr     ecx, 0Eh                                   C1 E9 0E
+	movzx   edx, byte ptr [rbx+15h]                    0F B6 53 15
+	and     ecx, 1                                     83 E1 01
+	mov     [rsp+38h+a2], eax                          89 44 24 40
+	shl     ecx, 8                                     C1 E1 08
+	or      ecx, edx                                   0B CA
+		|
+		v
+	movzx   ecx, byte ptr [rbx+Offset_iTypeHi]        0F B6 4B offset
+	movzx   edx, byte ptr [rbx+Offset_iTypeLo]        0F B6 53 offset
+	nop                                               90
+	nop                                               90
+	nop                                               90
+	nop                                               90
+	nop                                               90
+	nop                                               90
+	mov     [rsp+38h+a2], eax                         89 44 24 40
+	shl     ecx, 8                                    C1 E1 08
+	or      ecx, edx                                  0B CA
+	*/
+	{
+		auto loc = hook::get_pattern<uint8_t>("0F B7 4B 10 C1 E9 0E 0F B6 53 15");
+		const uint8_t patch[8]
+		{
+			0x0F, 0xB6, 0x4B, Offset_iTypeHi,
+			0x0F, 0xB6, 0x53, Offset_iTypeLo,
+		};
+		hook::patch_and_nop_remaining<14>(loc, patch);
+	}
 }
 
 static void Patch54()
@@ -1982,6 +2016,26 @@ static void Patch100()
 	hook::nop(loc + 4 + 3 + 7 + 3, 3);
 }
 
+static void Patch101()
+{
+	spdlog::info(__func__);
+
+	// access to CScenarioPoint::ModelSetId
+	auto loc = hook::get_pattern<uint8_t>("0F B6 43 16 3D FF 00 00 00");
+
+	/*
+	movzx   eax, byte ptr [rbx+16h]                    0F B6 43 16
+	cmp     eax, 0FFh                                  3D FF 00 00 00
+		|
+		v
+	movzx   eax, word ptr [rbx+Offset_ModelSetId]      0F B7 43 offset
+	cmp     eax, InvalidModelSetId                     3D nn nn nn nn
+	*/
+	hook::put<uint8_t>(loc + 1, 0xB7);
+	hook::put<uint8_t>(loc + 3, Offset_ModelSetId);
+	hook::put<uint32_t>(loc + 4 + 1, InvalidModelSetId);
+}
+
 static DWORD WINAPI Main()
 {
 	if (LoggingEnabled())
@@ -2065,6 +2119,7 @@ static DWORD WINAPI Main()
 	Patch98();
 	Patch99();
 	Patch100();
+	Patch101();
 
 	MH_EnableHook(MH_ALL_HOOKS);
 
