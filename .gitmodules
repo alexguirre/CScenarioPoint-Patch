@@ -7,6 +7,3 @@
 [submodule "dependencies/patterns"]
 	path = dependencies/patterns
 	url = https://github.com/ThirteenAG/Hooking.Patterns.git
-[submodule "dependencies/jitasm"]
-	path = dependencies/jitasm
-	url = https://tohjo.eu/citidev/jitasm.git
