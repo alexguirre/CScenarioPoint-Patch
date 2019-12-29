@@ -4,11 +4,9 @@ A patch for Grand Theft Auto V that increases the maximum number of scenario typ
 
 ## How it works
 
-The fields `iType` and `ModelSetId` of `CScenarioPoint` are defined as `uint8` which effectively limits the scenarios and model sets of `CScenarioPoint`s to the first 256 elements of their respective arrays (255 in the case of model sets since 0xFF is its invalid index value).
+The fields `iType` and `ModelSetId` of `CScenarioPoint` are defined as `uint8` which effectively limits the scenarios and model sets of `CScenarioPoint`s to the first 256 elements of their respective arrays (255 in the case of model sets since 0xFF is its invalid index value). As of v1868, the bit 14 of the `RuntimeFlags` field is used to provide an additional bit to the `iType` field, extending its limit to 512.
 
-This patch saves in a map the correct scenarios and model sets indices as `uint32`s for each loaded `CScenarioPoint` and every location that accesses the original fields is patched to access our map instead. Due to other places where `uint16` is used, such as the scenarios and model sets arrays, they are still limited to ~65.000. Reaching this limit has not been tested so the actual limit may be somewhat lower but it has been tested with ~2000 extra entries of each: ped model sets (ambientpedmodelsets.meta), vehicle model sets (vehiclemodelsets.meta) and scenario infos (scenarios.meta)
-
-See [NOTES](NOTES.md) for more specific information about each patch.
+This patch uses padding bytes of the `CScenarioPoint` structure to store the correct scenarios and model sets indices as `uint16`s and every location that accesses the original offsets is patched to access the new offsets. The `ModelSetId` value is now stored in 2 bytes at offset 0x22 and the `iType` value is stored at two different offsets, the lower 8 bits are stored at its original offset 0x15 and the higher 8 bits are stored at offset 0x1F.
 
 ## Requirements
 
