@@ -4,7 +4,11 @@
 class CScenarioPoint
 {
 public:
-	char field_0[21];
+	void* Refs;
+	void* OwnerEntity;
+	uint16_t RuntimeFlags;
+	uint16_t CargenIndex;
+	uint8_t unk_14; // ?
 	uint8_t iType;
 	uint8_t ModelSetId;
 	uint8_t iInterior;
@@ -15,11 +19,11 @@ public:
 	uint8_t iTimeEndOverride;
 	uint8_t iRadius;
 	uint8_t iTimeTillPedLeaves;
-	char field_1F;
+	uint8_t padding_1F;
 	uint16_t iScenarioGroup;
-	char field_22[2];
+	uint16_t padding_22;
 	uint32_t Flags;
-	char field_28[8];
+	uint64_t unk_28; // ?
 	float vPositionAndDirection[4];
 };
 

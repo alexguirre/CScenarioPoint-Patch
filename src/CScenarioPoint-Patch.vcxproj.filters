@@ -27,10 +27,6 @@
     <ClInclude Include="CScenarioPoint.h" />
     <ClInclude Include="CScenarioPointRegion.h" />
     <ClInclude Include="atArray.h" />
-    <ClInclude Include="CScenarioInfo.h" />
-    <ClInclude Include="CScenarioInfoManager.h" />
-    <ClInclude Include="CScenarioTypeGroup.h" />
-    <ClInclude Include="CCargen.h" />
   </ItemGroup>
   <ItemGroup>
     <Filter Include="dependencies">

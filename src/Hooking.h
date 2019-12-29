@@ -95,4 +95,16 @@ namespace hook
 	{
 		call_reg<1>(address, func);
 	}
+
+	template<size_t TotalNumBytes, size_t BytesToPatch, typename AddressType>
+	inline void patch_and_nop_remaining(AddressType address, const uint8_t(&patch)[BytesToPatch])
+	{
+		static_assert(BytesToPatch <= TotalNumBytes);
+
+		memcpy((void*)address, patch, BytesToPatch);
+		if constexpr (BytesToPatch != TotalNumBytes)
+		{
+			hook::nop((uintptr_t)address + BytesToPatch, TotalNumBytes - BytesToPatch);
+		}
+	}
 }

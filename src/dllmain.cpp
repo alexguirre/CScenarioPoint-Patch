@@ -3,15 +3,12 @@
 #include <spdlog/sinks/basic_file_sink.h>
 #include "Hooking.Patterns.h"
 #include "Hooking.h"
-#include "CScenarioInfo.h"
 #include "CScenarioPoint.h"
 #include "CScenarioPointRegion.h"
-#include "CScenarioInfoManager.h"
-#include "CCargen.h"
-#include <unordered_map>
 #include <MinHook.h>
-#include <jitasm.h>
 #include <filesystem>
+#include <iterator>
+#include <chrono>
 
 #if _DEBUG
 static constexpr bool DefaultEnableLogging = true;
@@ -33,28 +30,20 @@ static bool LoggingEnabled()
 
 using IsScenarioVehicleInfo_fn = bool(*)(uint32_t index);
 using CAmbientModelSetsManager_FindIndexByHash_fn = uint32_t(*)(void* mgr, int type, uint32_t hash);
-using CScenarioInfoManager_GetScenarioTypeByHash_fn = uint32_t(*)(CScenarioInfoManager* mgr, uint32_t* name, bool a3, bool searchInScenarioTypeGroups);
-using CScenarioPoint_CanScenarioSpawn_fn = bool(*)(CScenarioPoint* point, uint32_t scenarioIndex, bool, bool);
 static IsScenarioVehicleInfo_fn IsScenarioVehicleInfo;
 static CAmbientModelSetsManager_FindIndexByHash_fn CAmbientModelSetsManager_FindIndexByHash;
-static CScenarioInfoManager_GetScenarioTypeByHash_fn CScenarioInfoManager_GetScenarioTypeByHash;
-static CScenarioPoint_CanScenarioSpawn_fn CScenarioPoint_CanScenarioSpawn;
 
 static void FindGameFunctions()
 {
 	IsScenarioVehicleInfo = (IsScenarioVehicleInfo_fn)hook::pattern("48 83 EC 28 48 8B 15 ? ? ? ? 0F B7 42 10 3B C8 7D 2A").get(1).get<void>();
 	CAmbientModelSetsManager_FindIndexByHash = (CAmbientModelSetsManager_FindIndexByHash_fn)hook::get_pattern("44 89 44 24 ? 48 83 EC 28 48 63 C2 48 8D 14 80");
-	CScenarioInfoManager_GetScenarioTypeByHash = (CScenarioInfoManager_GetScenarioTypeByHash_fn)hook::get_pattern("48 8B F9 66 39 59 48 76 1C 8B 02", -0x1C);
-	CScenarioPoint_CanScenarioSpawn = (CScenarioPoint_CanScenarioSpawn_fn)hook::get_pattern("48 85 C9 74 06 0F B6 51 16 EB 05", -0x2D);
 }
 
 static void** g_AmbientModelSetsMgr;
-static CScenarioInfoManager** g_ScenarioInfoMgr;
 
 static void FindGameVariables()
 {
 	g_AmbientModelSetsMgr = hook::get_address<void**>(hook::get_pattern("48 8B 0D ? ? ? ? E8 ? ? ? ? 83 F8 FF 75 07", 3));
-	g_ScenarioInfoMgr = hook::get_address<CScenarioInfoManager**>(hook::get_pattern("8B 42 30 48 8B 0D ? ? ? ? 48 8D 54 24 ? 89 44 24 30", 6));
 }
 
 template<int FramesToSkip = 1>
@@ -81,105 +70,66 @@ static void LogStackTrace()
 	}
 }
 
-static void LogDefSpawnPointError(const char* at, const char* reason, char* extensionDefSpawnPoint)
-{
-	if (!LoggingEnabled())
-	{
-		return;
-	}
+/// The CScenarioPoint offset where we are going to store the ModelSetId as uint16,
+/// 2 bytes (which previously were padding) instead of 1 byte.
+constexpr ptrdiff_t Offset_ModelSetId{ offsetof(CScenarioPoint, padding_22) };
+static_assert(Offset_ModelSetId < 0xFF);
 
-	spdlog::info(
-		"at {}:\n"
-		"	{}:\n"
-		"		offsetPosition:		{}, {}, {}\n"
-		"		offsetRotation:		{}, {}, {}, {}\n"
-		"		spawnType:			{:08X}\n"
-		"		pedType:			{:08X}\n"
-		"		group:				{:08X}\n"
-		"		interior:			{:08X}\n"
-		"		requiredImap:		{:08X}\n"
-		"		availableInMpSp:	{}\n"
-		"		probability:		{}\n"
-		"		timeTillPedLeaves:	{}\n"
-		"		radius:				{}\n"
-		"		start:				{}\n"
-		"		end:				{}\n"
-		"		flags:				{:08X}\n"
-		"		highPri:			{}\n"
-		"		extendedRange:		{}\n"
-		"		shortRange:			{}\n",
-		at, reason,
-		*(float*)(extensionDefSpawnPoint + 0x10), *(float*)(extensionDefSpawnPoint + 0x14), *(float*)(extensionDefSpawnPoint + 0x18),
-		*(float*)(extensionDefSpawnPoint + 0x20), *(float*)(extensionDefSpawnPoint + 0x24), *(float*)(extensionDefSpawnPoint + 0x28), *(float*)(extensionDefSpawnPoint + 0x2C),
-		*(uint32_t*)(extensionDefSpawnPoint + 0x30),
-		*(uint32_t*)(extensionDefSpawnPoint + 0x34),
-		*(uint32_t*)(extensionDefSpawnPoint + 0x38),
-		*(uint32_t*)(extensionDefSpawnPoint + 0x3C),
-		*(uint32_t*)(extensionDefSpawnPoint + 0x40),
-		*(uint32_t*)(extensionDefSpawnPoint + 0x44),
-		*(float*)(extensionDefSpawnPoint + 0x48),
-		*(float*)(extensionDefSpawnPoint + 0x4C),
-		*(float*)(extensionDefSpawnPoint + 0x50),
-		*(uint8_t*)(extensionDefSpawnPoint + 0x54),
-		*(uint8_t*)(extensionDefSpawnPoint + 0x55),
-		*(uint32_t*)(extensionDefSpawnPoint + 0x58),
-		(*(bool*)(extensionDefSpawnPoint + 0x5C) ? "true" : "false"),
-		(*(bool*)(extensionDefSpawnPoint + 0x5D) ? "true" : "false"),
-		(*(bool*)(extensionDefSpawnPoint + 0x5E) ? "true" : "false"));
+constexpr uint16_t InvalidModelSetId{ 0xFFFF };
+
+/// The CScenarioPoint offsets where we are going to store the iType as uint16,
+/// the low byte in the original offset and the high byte in 1 byte of padding.
+constexpr ptrdiff_t Offset_iTypeLo{ offsetof(CScenarioPoint, iType) };
+constexpr ptrdiff_t Offset_iTypeHi{ offsetof(CScenarioPoint, padding_1F) };
+static_assert(Offset_iTypeLo < 0xFF);
+static_assert(Offset_iTypeHi < 0xFF);
+
+constexpr uint16_t InvalidScenarioType{ 0xFFFF };
+
+static void SetPointModelSet(CScenarioPoint* point, uint16_t modelSetId)
+{
+	*reinterpret_cast<uint16_t*>(reinterpret_cast<char*>(point)  + Offset_ModelSetId) = modelSetId;
 }
 
-struct ExtendedScenarioPoint
+static uint16_t GetPointModelSet(CScenarioPoint* point)
 {
-	uint32_t iType;
-	uint32_t ModelSetId;
-};
-static std::unordered_map<CScenarioPoint*, ExtendedScenarioPoint> g_Points;
-
-static void SavePoint(CScenarioPoint* point, uint32_t scenarioType, uint32_t modelSetId)
-{
-	g_Points[point] = { scenarioType, modelSetId };
+	return *reinterpret_cast<uint16_t*>(reinterpret_cast<char*>(point) + Offset_ModelSetId);
 }
 
-static void RemovePoint(CScenarioPoint* point)
+static void CheckPointModelSet(CScenarioPoint* point, uint32_t modelSetId)
 {
-	if (g_Points.erase(point) == 0)
+	if (modelSetId > 0xFFFF)
 	{
-		spdlog::warn("RemovePoint:: POINT {} NOT FOUND IN MAP ({}, {}, {})",
-			(void*)point, point->vPositionAndDirection[0], point->vPositionAndDirection[1], point->vPositionAndDirection[2]);
-		LogStackTrace<2>();
+		spdlog::warn("Scenario Point (addr:{}; X:{:.2f},Y:{:.2f},Z:{:.2f}) with ModelSetId (ID:{}) > 0xFFFF",
+			reinterpret_cast<void*>(point),
+			point->vPositionAndDirection[0], point->vPositionAndDirection[1], point->vPositionAndDirection[2],
+			modelSetId);
+		LogStackTrace();
 	}
 }
 
-static uint32_t GetSavedModelSetId(CScenarioPoint* point)
+static void SetPointScenarioType(CScenarioPoint* point, uint16_t type)
 {
-	auto p = g_Points.find(point);
-	if (p != g_Points.end())
-	{
-		return p->second.ModelSetId;
-	}
-	else
-	{
-		spdlog::warn("GetSavedModelSetId:: POINT {} NOT FOUND IN MAP ({}, {}, {})",
-			(void*)point, point->vPositionAndDirection[0], point->vPositionAndDirection[1], point->vPositionAndDirection[2]);
-		LogStackTrace<2>();
-		return point->ModelSetId;
-	}
+	*reinterpret_cast<uint8_t*>(reinterpret_cast<char*>(point) + Offset_iTypeLo) = type & 0xFF;
+	*reinterpret_cast<uint8_t*>(reinterpret_cast<char*>(point) + Offset_iTypeHi) = type >> 8;
 }
 
-static uint32_t GetSavedScenarioType(CScenarioPoint* point)
+static uint16_t GetPointScenarioType(CScenarioPoint* point)
 {
-	auto p = g_Points.find(point);
-	if (p != g_Points.end())
+	const uint16_t lo = *reinterpret_cast<uint8_t*>(reinterpret_cast<char*>(point) + Offset_iTypeLo);
+	const uint16_t hi = *reinterpret_cast<uint8_t*>(reinterpret_cast<char*>(point) + Offset_iTypeHi);
+	return (hi << 8) | lo;
+}
+
+static void CheckPointScenarioType(CScenarioPoint* point, uint32_t type)
+{
+	if (type > 0xFFFF)
 	{
-		return p->second.iType;
-	}
-	else
-	{
-		spdlog::warn("GetSavedScenarioType:: POINT {} NOT FOUND IN MAP ({}, {}, {})",
-			(void*)point, point->vPositionAndDirection[0], point->vPositionAndDirection[1],
-			point->vPositionAndDirection[2]);
-		LogStackTrace<2>();
-		return point->iType;
+		spdlog::warn("Scenario Point (addr:{}; X:{:.2f},Y:{:.2f},Z:{:.2f}) with iType (ID:{}) > 0xFFFF",
+			reinterpret_cast<void*>(point),
+			point->vPositionAndDirection[0], point->vPositionAndDirection[1], point->vPositionAndDirection[2],
+			type);
+		LogStackTrace();
 	}
 }
 
@@ -188,21 +138,26 @@ static void Patch1()
 	spdlog::info(__func__);
 
 	// CScenarioPointRegion::LookUps::ConvertHashesToIndices
-	hook::put(hook::get_pattern("41 BD ? ? ? ? 85 ED 7E 51 4C 8B F3", 2), 0xFFFFFFFF);
+	hook::put<uint32_t>(hook::get_pattern("41 BD ? ? ? ? 85 ED 7E 51 4C 8B F3", 2), InvalidModelSetId);
 }
 
 static void(*CScenarioPoint_TransformIdsToIndices_orig)(CScenarioPointRegion::sLookUps*, CScenarioPoint*);
 static void CScenarioPoint_TransformIdsToIndices_detour(CScenarioPointRegion::sLookUps* indicesLookups, CScenarioPoint* point)
 {
-	uint32_t scenarioIndex = indicesLookups->TypeNames.Items[point->iType];
+	const uint32_t scenarioIndex = indicesLookups->TypeNames.Items[point->iType];
+	CheckPointScenarioType(point, scenarioIndex);
 
-	atArray<uint32_t>* modelSetNames = IsScenarioVehicleInfo(scenarioIndex) ?
-										&indicesLookups->VehicleModelSetNames :
-										&indicesLookups->PedModelSetNames;
+	const atArray<uint32_t>* modelSetNames = IsScenarioVehicleInfo(scenarioIndex) ?
+		&indicesLookups->VehicleModelSetNames :
+		&indicesLookups->PedModelSetNames;
 
-	SavePoint(point, scenarioIndex, modelSetNames->Items[point->ModelSetId]);
+	const uint32_t modelSet = modelSetNames->Items[point->ModelSetId];
+	CheckPointModelSet(point, modelSet);
 
 	CScenarioPoint_TransformIdsToIndices_orig(indicesLookups, point);
+
+	SetPointScenarioType(point, scenarioIndex);
+	SetPointModelSet(point, modelSet);
 }
 
 static void Patch2()
@@ -210,7 +165,7 @@ static void Patch2()
 	spdlog::info(__func__);
 
 	// CScenarioPoint::TransformIdsToIndices
-	MH_CreateHook(hook::get_pattern("48 8B 01 44 0F B6 42 ? 0F B6 72 16", -0xF), CScenarioPoint_TransformIdsToIndices_detour, (void**)&CScenarioPoint_TransformIdsToIndices_orig);
+	MH_CreateHook(hook::get_pattern("48 83 EC 20 44 0F B7 42 ? 0F B6 42 15", -0xB), CScenarioPoint_TransformIdsToIndices_detour, (void**)&CScenarioPoint_TransformIdsToIndices_orig);
 }
 
 static void Patch3()
@@ -218,7 +173,7 @@ static void Patch3()
 	spdlog::info(__func__);
 
 	// CScenarioInfoManager::IsValidModelSet
-	hook::put(hook::get_pattern("81 FF ? ? ? ? 74 6F 48 8B 05", 2), 0xFFFFFFFF);
+	hook::put(hook::get_pattern("81 FF ? ? ? ? 74 6F 48 8B 05", 2), InvalidModelSetId);
 }
 
 static void Patch4()
@@ -226,38 +181,24 @@ static void Patch4()
 	spdlog::info(__func__);
 
 	// CScenarioPoint::CanScenarioSpawn
-	static struct : jitasm::Frontend
-	{
-		static int GetModelSetIndex(CScenarioPoint* point)
-		{
-			if (!point)
-			{
-				return 0xFFFFFFFF;
-			}
+	auto loc = hook::get_pattern<uint8_t>("0F B6 51 16 EB 05 BA");
 
-			return GetSavedModelSetId(point);
-		}
+	/*
+	movzx   edx, byte ptr [rcx+16h]                 0F B6 51 16
+		|
+		v
+	movzx   edx, word ptr [rcx+Offset_ModelSetId]    0F B7 51 offset
+	*/
+	hook::put<uint8_t>(loc + 1, 0xB7);
+	hook::put<uint8_t>(loc + 3, Offset_ModelSetId);
 
-		void InternalMain() override
-		{
-			push(rcx);
-			sub(rsp, 0x10);
-
-			mov(rcx, rdi);
-			mov(rax, (uintptr_t)GetModelSetIndex);
-			call(rax);
-
-			add(rsp, 0x10);
-			pop(rcx);
-
-			mov(edx, eax);
-			ret();
-		}
-	} getModelSetIndexStub;
-
-	auto location = hook::get_pattern("48 85 C9 74 06 0F B6 51 16 EB 05");
-	hook::nop(location, 0x10);
-	hook::call(location, getModelSetIndexStub.GetCode());
+	/*
+	mov     edx, 0FFh                               BA FF 00 00 00
+		|
+		v
+	mov     edx, InvalidModelSetId                  BA nn nn nn nn
+	*/
+	hook::put<uint32_t>(loc + 7, InvalidModelSetId);
 }
 
 static void Patch5()
@@ -265,158 +206,57 @@ static void Patch5()
 	spdlog::info(__func__);
 
 	// bool GetAndLoadScenarioPointModel(__int64 rcx0, signed int scenarioIndex, CScenarioPoint *point, __int64 a4, ...)
-	static struct : jitasm::Frontend
-	{
-		static int GetModelSetIndex(CScenarioInfo* scenario, CScenarioPoint* point)
-		{
-			constexpr uint32_t CScenarioVehicleInfo_ClassId = 0xFB9AD9D7;
+	
+	auto loc = hook::get_pattern<uint8_t>("41 BF ? ? ? ? FF 10 84 C0 75 05 45 0F B6 7E ?");
 
-			if (scenario->GetIsClassId(CScenarioVehicleInfo_ClassId))
-			{
-				return 0xFFFFFFFF;
-			}
+	/*
+	mov     r15d, 0FFh                              41 BF FF 00 00 00
+		|
+		v
+	mov     r15d, InvalidModelSetId                 41 BF nn nn nn nn
+	*/
+	hook::put<uint32_t>(loc + 2, InvalidModelSetId);
 
-			return GetSavedModelSetId(point);
-		}
+	/*
+	movzx   r15d, byte ptr [r14+16h]                45 0F B6 7E 16
+		|
+		v
+	movzx   r15d, word ptr [r14+Offset_ModelSetId]   45 0F B7 7E offset
+	*/
+	hook::put<uint8_t>(loc + 12 + 2, 0xB7);
+	hook::put<uint8_t>(loc + 12 + 4, Offset_ModelSetId);
 
-		void InternalMain() override
-		{
-			push(rcx);
-			push(rdx);
-			sub(rsp, 0x18);
-
-			mov(rcx, rdi); // first param: CScenarioInfo*
-			mov(rdx, r14); // second param: CScenarioPoint*
-			mov(rax, (uintptr_t)GetModelSetIndex);
-			call(rax);
-
-			add(rsp, 0x18);
-			pop(rdx);
-			pop(rcx);
-
-			mov(r15d, eax);
-			ret();
-		}
-	} getModelSetIndexStub;
-
-	auto location = hook::get_pattern("48 8B CF 41 BF ? ? ? ? FF 10 84 C0");
-	hook::nop(location, 0x14);
-	hook::call(location, getModelSetIndexStub.GetCode());
-
-	// cmp against 0xFFFFFFF
-	hook::put(hook::get_pattern("41 81 FF ? ? ? ? 0F 85 ? ? ? ? B9", 3), 0xFFFFFFFF);
-}
-
-static void(*CScenarioPoint_Delete_orig)(CScenarioPoint*);
-static void CScenarioPoint_Delete_detour(CScenarioPoint* _this)
-{
-	RemovePoint(_this);
-
-	CScenarioPoint_Delete_orig(_this);
-}
-
-static void Patch6()
-{
-	spdlog::info(__func__);
-
-	// disabled due to issues when reloading the game
-	//MH_CreateHook(hook::get_pattern("48 8B 0D ? ? ? ? E8 ? ? ? ? 48 8B CB E8 ? ? ? ? C6 05", -0xC), CScenarioPoint_Delete_detour, (void**)&CScenarioPoint_Delete_orig);
+	/*
+	cmp     r15d, 0FFh                              41 81 FF FF 00 00 00
+		|
+		v
+	cmp     r15d, InvalidModelSetId                 41 81 FF nn nn nn nn
+	*/
+	hook::put<uint32_t>(loc + 0x5F + 3, InvalidModelSetId);
 }
 
 static void Patch7()
 {
 	spdlog::info(__func__);
 
-	static struct : jitasm::Frontend
-	{
-		void InternalMain() override
-		{
-			push(rcx);
-			sub(rsp, 0x10);
+	auto loc = hook::get_pattern<uint8_t>("0F B6 47 16 3D ? ? ? ? 74 13 8B D0 48 8B 05");
 
-			mov(rcx, rdi); // param: CScenarioPoint*
-			mov(rax, (uintptr_t)GetSavedModelSetId);
-			call(rax);
+	/*
+	movzx   eax, byte ptr [rdi+16h]                 0F B6 47 16
+		|
+		v
+	movzx   eax, word ptr [rdi+Offset_ModelSetId]    0F B7 47 offset
+	*/
+	hook::put<uint8_t>(loc + 1, 0xB7);
+	hook::put<uint8_t>(loc + 3, Offset_ModelSetId);
 
-			add(rsp, 0x10);
-			pop(rcx);
-
-			cmp(eax, 0xFFFFFFFF);
-			ret();
-		}
-	} getModelSetIndexAndCmpStub;
-	{
-		hook::pattern pattern("0F B6 47 16 3D ? ? ? ? 74 13 8B D0 48 8B 05");
-		pattern.count(2);
-		pattern.for_each_result([](const hook::pattern_match& match)
-		{
-			auto location = match.get<void>();
-			hook::nop(location, 0x9);
-			hook::call(location, getModelSetIndexAndCmpStub.GetCode());
-		});
-	}
-
-	static struct : jitasm::Frontend
-	{
-		void InternalMain() override
-		{
-			push(r8);
-			push(r9);
-			push(rax);
-			sub(rsp, 0x20);
-
-			mov(rcx, rdi); // param: CScenarioPoint*
-			mov(rax, (uintptr_t)GetSavedScenarioType);
-			call(rax);
-			mov(ebx, eax);
-
-			add(rsp, 0x20);
-			pop(rax);
-			pop(r9);
-			pop(r8);
-
-			movzx(ecx, word_ptr[rax + 0x10]);
-			ret();
-		}
-	} getScenarioTypeStub;
-	{
-		hook::pattern pattern("0F B6 5F 15 0F B7 48 10 3B D9");
-		pattern.count(2);
-		pattern.for_each_result([](const hook::pattern_match& match)
-		{
-			auto location = match.get<void>();
-			hook::nop(location, 0x8);
-			hook::call_rcx(location, getScenarioTypeStub.GetCode());
-		});
-	}
-
-	static struct : jitasm::Frontend
-	{
-		void InternalMain() override
-		{
-			push(r8);
-			push(r9);
-			push(rdx);
-			sub(rsp, 0x20);
-
-			mov(rcx, rdi); // param: CScenarioPoint*
-			mov(rax, (uintptr_t)GetSavedScenarioType);
-			call(rax);
-			mov(r14d, eax);
-
-			add(rsp, 0x20);
-			pop(rdx);
-			pop(r9);
-			pop(r8);
-
-			ret();
-		}
-	} getScenarioTypeStub2;
-	{
-		auto location = hook::get_pattern("44 0F B6 77 ? 0F B7 4A 10 44 3B F1");
-		hook::nop(location, 0x5);
-		hook::call(location, getScenarioTypeStub2.GetCode());
-	}
+	/*
+	cmp     eax, 0FFh                               3D FF 00 00 00
+		|
+		v
+	cmp     eax, InvalidModelSetId                  3D nn nn nn nn
+	*/
+	hook::put<uint32_t>(loc + 4 + 1, InvalidModelSetId);
 }
 
 static uint32_t GetFinalModelSetHash(uint32_t hash)
@@ -427,740 +267,62 @@ static uint32_t GetFinalModelSetHash(uint32_t hash)
 	return hash == any_hash ? usepopulation_hash : hash;
 }
 
+static bool(*CScenarioPoint_SetModelSet_orig)(CScenarioPoint* This, const uint32_t* modelSetHash, bool isVehicle);
+static bool CScenarioPoint_SetModelSet_detour(CScenarioPoint* This, const uint32_t* modelSetHash, bool isVehicle)
+{
+	constexpr uint32_t usepopulation_hash = 0xA7548A2;
+
+	bool result = true;
+	uint16_t modelSetId = InvalidModelSetId;
+
+	if (*modelSetHash != usepopulation_hash)
+	{
+		const uint32_t modelSetIndex = CAmbientModelSetsManager_FindIndexByHash(*g_AmbientModelSetsMgr, isVehicle ? 2 : 0, *modelSetHash);
+		if (modelSetIndex == 0xFFFFFFFF)
+		{
+			result = false;
+		}
+		else
+		{
+			CheckPointModelSet(This, modelSetIndex);
+			modelSetId = static_cast<uint16_t>(modelSetIndex);
+		}
+	}
+
+	This->ModelSetId = static_cast<uint8_t>(modelSetId);
+	SetPointModelSet(This, modelSetId);
+
+	return result;
+}
+
 static void Patch8()
 {
 	spdlog::info(__func__);
 
-	// CScenarioPoint::InitFromSpawnPointDef
-
-	static struct : jitasm::Frontend
-	{
-		static int Save(CScenarioPoint* point, char* extensionDefSpawnPoint, CScenarioInfoManager* scenarioInfoMgr)
-		{
-			uint32_t spawnType = *(uint32_t*)(extensionDefSpawnPoint + 0x30);
-			uint32_t scenarioType = CScenarioInfoManager_GetScenarioTypeByHash(scenarioInfoMgr, &spawnType, true, true);
-			if (scenarioType == 0xFFFFFFFF)
-			{
-				scenarioType = 0;
-
-				LogDefSpawnPointError(
-					"CScenarioPoint::InitFromSpawnPointDef",
-					"CExtensionDefSpawnPoint has invalid spawnType",
-					extensionDefSpawnPoint);
-			}
-
-			uint32_t pedType = *(uint32_t*)(extensionDefSpawnPoint + 0x34);
-			uint32_t modelSetHash = GetFinalModelSetHash(pedType);
-			int modelSetType = IsScenarioVehicleInfo(scenarioType) ? 2 : 0;
-			uint32_t modelSet = CAmbientModelSetsManager_FindIndexByHash(*g_AmbientModelSetsMgr, modelSetType, modelSetHash);
-
-			//spdlog::info("InitFromSpawnPointDef:: Save -> point:{}, spawnType:{:08X}, scenarioType:{:08X}, modelSetHash:{:08X}, modelSet:{:08X}",
-			//			(void*)point, spawnType, scenarioType, modelSetHash, modelSet);
-			SavePoint(point, scenarioType, modelSet);
-
-			return scenarioType;
-		}
-
-		void InternalMain() override
-		{
-			push(rcx);
-			push(r8);
-			sub(rsp, 0x18);
-
-			mov(r8, rcx);    // third param:  CScenarioInfoManager*
-			//mov(rdx, rdx); // second param: CExtensionDefSpawnPoint*
-			mov(rcx, rbx);   // first param:  CScenarioPoint*
-			mov(rax, (uintptr_t)Save);
-			call(rax);
-
-			add(rsp, 0x18);
-			pop(r8);
-			pop(rcx);
-
-			ret();
-		}
-	} savePointStub;
-
-	auto location = hook::get_pattern("41 B1 01 48 8D 55 20 89 45 20");
-	hook::nop(location, 0x12);
-	hook::call(location, savePointStub.GetCode());
-}
-
-static std::unordered_map<void*, uint32_t> g_SpawnPointsScenarioTypes;
-
-static void(*CSpawnPoint_InitFromDef_orig)(void* spawnPoint, char* extensionDefSpawnPoint);
-static void CSpawnPoint_InitFromDef_detour(void* spawnPoint, char* extensionDefSpawnPoint)
-{
-	uint32_t spawnType = *(uint32_t*)(extensionDefSpawnPoint + 0x30);
-	uint32_t scenarioType = CScenarioInfoManager_GetScenarioTypeByHash(*g_ScenarioInfoMgr, &spawnType, true, true);
-	if (scenarioType == 0xFFFFFFFF)
-	{
-		scenarioType = 0;
-
-		LogDefSpawnPointError(
-			"CSpawnPoint::InitFromDef",
-			"CExtensionDefSpawnPoint has invalid spawnType",
-			extensionDefSpawnPoint);
-	}
-
-	g_SpawnPointsScenarioTypes[spawnPoint] = scenarioType;
-
-	CSpawnPoint_InitFromDef_orig(spawnPoint, extensionDefSpawnPoint);
-}
-
-static void*(*CSpawnPoint_dtor_orig)(void* spawnPoint, char a2);
-static void* CSpawnPoint_dtor_detour(void* spawnPoint, char a2)
-{
-	g_SpawnPointsScenarioTypes.erase(spawnPoint);
-
-	return CSpawnPoint_dtor_orig(spawnPoint, a2);
-}
-
-static void Patch9()
-{
-	spdlog::info(__func__);
-
-	auto cspawnPointVTable = hook::get_address<void**>(hook::get_pattern("48 8D 05 ? ? ? ? 41 B9 ? ? ? ? 48 89 02", 3));
-	CSpawnPoint_dtor_orig = (decltype(CSpawnPoint_dtor_orig))cspawnPointVTable[0];
-	CSpawnPoint_InitFromDef_orig = (decltype(CSpawnPoint_InitFromDef_orig))cspawnPointVTable[2];
-
-	cspawnPointVTable[0] = CSpawnPoint_dtor_detour;
-	cspawnPointVTable[2] = CSpawnPoint_InitFromDef_detour;
-
-
-	// CScenarioPoint::ctorWithEntity
-
-	static struct : jitasm::Frontend
-	{
-		static uint32_t Save(CScenarioPoint* point, void* spawnPoint)
-		{
-			uint32_t scenarioType = 0;
-			auto p = g_SpawnPointsScenarioTypes.find(spawnPoint);
-			if (p != g_SpawnPointsScenarioTypes.end())
-			{
-				scenarioType = p->second;
-			}
-
-			uint32_t pedType = *(uint32_t*)((char*)spawnPoint + 0x1C);
-			uint32_t modelSetHash = GetFinalModelSetHash(pedType);
-			int modelSetType = IsScenarioVehicleInfo(scenarioType) ? 2 : 0;
-			uint32_t modelSet = CAmbientModelSetsManager_FindIndexByHash(*g_AmbientModelSetsMgr, modelSetType, modelSetHash);
-
-			SavePoint(point, scenarioType, modelSet);
-
-			return modelSetHash;
-		}
-
-		void InternalMain() override
-		{
-			push(rcx);
-			push(rdx);
-			sub(rsp, 0x18);
-
-			mov(rdx, rdi); // second param: CSpawnPoint*
-			mov(rcx, rbx); // first param:  CScenarioPoint*
-			mov(rax, (uintptr_t)Save);
-			call(rax);
-
-			add(rsp, 0x18);
-			pop(rdx);
-			pop(rcx);
-
-			ret();
-		}
-	} savePointStub;
-
-	auto location = hook::get_pattern("E8 ? ? ? ? 89 47 1C 0F B6 4B 15");
-	hook::nop(location, 0x5);
-	hook::call(location, savePointStub.GetCode());
-}
-
-static void(*CSpawnPointOverrideExtension_OverrideScenarioPoint_orig)(char* spawnPointOverrideExtension, CScenarioPoint* point);
-static void CSpawnPointOverrideExtension_OverrideScenarioPoint_detour(char* spawnPointOverrideExtension, CScenarioPoint* point)
-{
-	auto p = g_Points.find(point);
-	if (p != g_Points.end()) // every point passed to this method should already be in the map from the CScenarioPoint::ctorWithEntity hook
-	{
-		uint32_t origiType = p->second.iType;
-		uint32_t origModelSetId = p->second.ModelSetId;
-
-		uint32_t overrideScenarioType = *(uint32_t*)(spawnPointOverrideExtension + 0x8);
-		if (overrideScenarioType)
-		{
-			uint32_t newScenarioType = CScenarioInfoManager_GetScenarioTypeByHash(*g_ScenarioInfoMgr, &overrideScenarioType, true, true);
-			if (newScenarioType == 0xFFFFFFFF)
-			{
-				newScenarioType = 0;
-				spdlog::info("SpawnPointOverrideExtension has invalid scenarioType\n"
-					"point pos: {} {} {}\n"
-					"scenarioType: {:08X}",
-					point->vPositionAndDirection[0],
-					point->vPositionAndDirection[1],
-					point->vPositionAndDirection[2],
-					overrideScenarioType);
-			}
-			p->second.iType = newScenarioType;
-		}
-
-		uint32_t overrideModelSet = *(uint32_t*)(spawnPointOverrideExtension + 0x14);
-		if (overrideModelSet)
-		{
-			overrideModelSet = GetFinalModelSetHash(overrideModelSet);
-			int modelSetType = IsScenarioVehicleInfo(p->second.iType) ? 2 : 0;
-			uint32_t newModelSet = CAmbientModelSetsManager_FindIndexByHash(*g_AmbientModelSetsMgr, modelSetType, overrideModelSet);
-			p->second.ModelSetId = newModelSet;
-		}
-	}
-
-	CSpawnPointOverrideExtension_OverrideScenarioPoint_orig(spawnPointOverrideExtension, point);
-}
-
-static void Patch10()
-{
-	spdlog::info(__func__);
-
-	// CSpawnPointOverrideExtension::OverrideScenarioPoint
-
-	MH_CreateHook(hook::get_pattern("48 83 EC 20 8B 41 08 33 FF 48 8B F2", -0xB), CSpawnPointOverrideExtension_OverrideScenarioPoint_detour,
-		(void**)&CSpawnPointOverrideExtension_OverrideScenarioPoint_orig);
-}
-
-static void Patch11()
-{
-	spdlog::info(__func__);
-
-	// patch calls to CScenarioPoint::GetScenarioType
-
-	constexpr int R14_REG = 0;
-	constexpr int EBX_REG = 1;
-	constexpr int ECX_REG = 2;
-	constexpr int ESI_REG = 3;
-	struct stub : jitasm::Frontend
-	{
-		const int m_reg;
-
-		stub(int reg) : m_reg(reg)
-		{
-		}
-
-		void InternalMain() override
-		{
-			push(r8);
-			push(r9);
-
-			sub(rsp, 0x18);
-
-			// rcx already is CScenarioPoint*
-			mov(rax, (uintptr_t)GetSavedScenarioType);
-			call(rax);
-
-			switch (m_reg)
-			{
-			case R14_REG: mov(r14d, eax); break;
-			case EBX_REG: mov(ebx, eax); break;
-			case ECX_REG: mov(ecx, eax); break;
-			case ESI_REG: mov(esi, eax); break;
-			}
-
-			add(rsp, 0x18);
-
-			pop(r9);
-			pop(r8);
-
-			ret();
-		}
-	};
-	static stub getScenarioTypeAndStoreInR14Stub(R14_REG);
-	static stub getScenarioTypeAndStoreInEBXStub(EBX_REG);
-	static stub getScenarioTypeAndStoreInECXStub(ECX_REG);
-	static stub getScenarioTypeAndStoreInESIStub(ESI_REG);
-
-	{
-		auto location = hook::get_pattern("E8 ? ? ? ? 44 0F B6 F0 41 8B CE E8");
-		hook::nop(location, 0x9);
-		hook::call(location, getScenarioTypeAndStoreInR14Stub.GetCode());
-	}
-
-	{
-		auto location = hook::get_pattern("E8 ? ? ? ? 0F B6 D8 8B CB E8");
-		hook::nop(location, 0x8);
-		hook::call(location, getScenarioTypeAndStoreInEBXStub.GetCode());
-	}
-	{
-		auto location = hook::get_pattern("E8 ? ? ? ? 4C 8B 0D ? ? ? ? 45 0F B7 51");
-		hook::nop(location, 0x5);
-		hook::call(location, getScenarioTypeAndStoreInEBXStub.GetCode());
-		hook::nop((char*)location + 0x11, 3);
-	}
-	{
-		auto location = hook::get_pattern("E8 ? ? ? ? 48 8B 15 ? ? ? ? 0F B7 4A 10");
-		hook::nop(location, 0x5);
-		hook::call(location, getScenarioTypeAndStoreInEBXStub.GetCode());
-		hook::nop((char*)location + 0x10, 3);
-	}
-
-	{
-		auto location = hook::get_pattern("E8 ? ? ? ? 0F B6 C8 E8");
-		hook::nop(location, 0x8);
-		hook::call(location, getScenarioTypeAndStoreInECXStub.GetCode());
-	}
-	{
-		auto location = hook::get_pattern("E8 ? ? ? ? 48 8B D5 0F B6 C8");
-		hook::nop(location, 0x5);
-		hook::call(location, getScenarioTypeAndStoreInECXStub.GetCode());
-		hook::nop((char*)location + 0x8, 3);
-	}
-	{
-		auto location = hook::get_pattern("E8 ? ? ? ? 48 8B D3 0F B6 C8");
-		hook::nop(location, 0x5);
-		hook::call(location, getScenarioTypeAndStoreInECXStub.GetCode());
-		hook::nop((char*)location + 0x8, 3);
-	}
-
-	{
-		auto location = hook::get_pattern("E8 ? ? ? ? 4C 8B 2D ? ? ? ? 44 8A FF");
-		hook::nop(location, 0x5);
-		hook::call(location, getScenarioTypeAndStoreInESIStub.GetCode());
-		hook::nop((char*)location + 0xF, 3);
-	}
-}
-
-
-static uint32_t GetScenarioTypeIndex(CScenarioPoint* point, uint32_t subType)
-{
-	uint32_t type = GetSavedScenarioType(point);
-	CScenarioInfoManager* mgr = *g_ScenarioInfoMgr;
-	if (type >= mgr->Scenarios.Count)
-	{
-		uint32_t idx = type - mgr->Scenarios.Count;
-		type = mgr->ScenarioTypeGroups.Items[idx]->Types.Items[subType].ScenarioTypeIndex;
-	}
-
-	return type;
-}
-
-static bool(*CScenarioPoint_IsScenarioTypeEnabled_orig)(CScenarioPoint*, uint32_t);
-static bool CScenarioPoint_IsScenarioTypeEnabled_detour(CScenarioPoint* _this, uint32_t subType)
-{
-	return (*g_ScenarioInfoMgr)->ScenarioEnabledFlags.Items[GetScenarioTypeIndex(_this, subType)];
-}
-
-static uint32_t(*CScenarioPoint_GetScenarioTypeIndex_orig)(CScenarioPoint*, uint32_t);
-static uint32_t CScenarioPoint_GetScenarioTypeIndex_detour(CScenarioPoint* _this, uint32_t subType)
-{
-	return GetScenarioTypeIndex(_this, subType);
-}
-
-static void Patch12()
-{
-	spdlog::info(__func__);
-
-	hook::pattern pattern("0F B6 41 15 4C 8B 05 ? ? ? ? 41 0F B7 48");
-	pattern.count(2);
-
-	MH_CreateHook(pattern.get(0).get<void>(), CScenarioPoint_IsScenarioTypeEnabled_detour, (void**)&CScenarioPoint_IsScenarioTypeEnabled_orig);
-	MH_CreateHook(pattern.get(1).get<void>(), CScenarioPoint_GetScenarioTypeIndex_detour, (void**)&CScenarioPoint_GetScenarioTypeIndex_orig);
-}
-
-static bool(*CScenarioPoint_CanSpawn_orig)(CScenarioPoint*, bool, bool, uint32_t);
-static bool CScenarioPoint_CanSpawn_detour(CScenarioPoint* _this, bool a2, bool a3, uint32_t subType)
-{
-	return CScenarioPoint_CanScenarioSpawn(_this, GetScenarioTypeIndex(_this, subType), a2, a3);
-}
-
-static void Patch13()
-{
-	spdlog::info(__func__);
-
-	MH_CreateHook(hook::get_pattern("40 53 48 83 EC 20 48 8B 05 ? ? ? ? 44 8A DA"), CScenarioPoint_CanSpawn_detour, (void**)&CScenarioPoint_CanSpawn_orig);
-}
-
-static void Patch14()
-{
-	spdlog::info(__func__);
-
-	static struct : jitasm::Frontend
-	{
-		void InternalMain() override
-		{
-			mov(rbx, rcx);
-
-			sub(rsp, 0x8);
-
-			// rcx already is CScenarioPoint*
-			mov(rax, (uintptr_t)GetSavedScenarioType);
-			call(rax);
-			mov(ecx, eax);
-
-			add(rsp, 0x8);
-			
-			ret();
-		}
-	} getScenarioTypeStub;
-
-	auto location = hook::get_pattern("48 8B D9 0F B6 49 15 40 8A EA");
-	hook::nop(location, 0x7);
-	hook::call(location, getScenarioTypeStub.GetCode());
-}
-
-static void Patch15()
-{
-	spdlog::info(__func__);
-
-	static struct : jitasm::Frontend
-	{
-		void InternalMain() override
-		{
-			sub(rsp, 0x8);
-
-			// rcx already is CScenarioPoint*
-			mov(rax, (uintptr_t)GetSavedScenarioType);
-			call(rax);
-			mov(ecx, eax);
-
-			add(rsp, 0x8);
-
-			test(ecx, ecx);
-			ret();
-		}
-	} getScenarioTypeStub;
-	{
-		auto location = hook::get_pattern("0F B6 49 15 85 C9 78 48");
-		hook::nop(location, 0x6);
-		hook::call(location, getScenarioTypeStub.GetCode());
-	}
-	{
-		auto location = hook::get_pattern("0F B6 49 15 85 C9 0F 88");
-		hook::nop(location, 0x6);
-		hook::call(location, getScenarioTypeStub.GetCode());
-	}
-}
-
-static void Patch16()
-{
-	spdlog::info(__func__);
-
-	// CTaskUseScenario::ctor
-
-	static struct : jitasm::Frontend
-	{
-		void InternalMain() override
-		{
-			sub(rsp, 0x8);
-
-			mov(rcx, rax); // param: CScenarioPoint*
-			mov(rax, (uintptr_t)GetSavedScenarioType);
-			call(rax);
-
-			mov(dword_ptr[rdi + 0x18C], eax);
-
-			add(rsp, 0x8);
-
-			ret();
-		}
-	} getScenarioTypeStub;
-
-	auto location = hook::get_pattern("0F B6 40 15 89 87");
-	hook::nop(location, 0xA);
-	// call_rcx because rax contains the CScenarioPoint*
-	hook::call_rcx(location, getScenarioTypeStub.GetCode());
-}
-
-static void Patch17()
-{
-	spdlog::info(__func__);
-
-	static struct : jitasm::Frontend
-	{
-		static uint32_t GetScenarioType(uint64_t offset, CScenarioPoint* points)
-		{
-			uint64_t index = (offset / sizeof(CScenarioPoint));
-			CScenarioPoint* p = &points[index];
-			return GetSavedScenarioType(p);
-		}
-
-		void InternalMain() override
-		{
-			push(r8);
-			push(r9);
-			sub(rsp, 0x18);
-
-			//mov(rdx, rdx); // second param: CScenarioPoint array
-			mov(rcx, rdi);   // first param: offset
-			mov(rax, (uintptr_t)GetScenarioType);
-			call(rax);
-
-			mov(ecx, eax);
-
-			add(rsp, 0x18);
-			pop(r9);
-			pop(r8);
-
-			ret();
-		}
-	} getScenarioTypeStub;
-
-	auto location = hook::get_pattern("0F B6 4C 17 ? E8");
-	hook::nop(location, 0x5);
-	hook::call(location, getScenarioTypeStub.GetCode());
-}
-
-static void Patch18()
-{
-	spdlog::info(__func__);
-
-	static struct : jitasm::Frontend
-	{
-		static bool IsVehicleInfo(CScenarioPoint* point)
-		{
-			return IsScenarioVehicleInfo(GetSavedScenarioType(point));
-		}
-
-		void InternalMain() override
-		{
-			sub(rsp, 0x8);
-
-			mov(rcx, rdx);   // first param: CScenarioPoint*
-			mov(rax, (uintptr_t)IsVehicleInfo);
-			call(rax);
-
-			add(rsp, 0x8);
-
-			ret();
-		}
-	} isVehicleInfoStub;
-
-	auto location = hook::get_pattern("0F B6 4A 15 E8 ? ? ? ? 84 C0");
-	hook::nop(location, 0x9);
-	hook::call(location, isVehicleInfoStub.GetCode());
-}
-
-static void Patch19()
-{
-	spdlog::info(__func__);
-
-	static struct : jitasm::Frontend
-	{
-		static CScenarioInfoManager* GetMgr()
-		{
-			return *g_ScenarioInfoMgr;
-		}
-
-		void InternalMain() override
-		{
-			push(r8);
-			push(r9);
-			sub(rsp, 0x18);
-
-			mov(rcx, rdx);   // first param: CScenarioPoint*
-			mov(rax, (uintptr_t)GetSavedScenarioType);
-			call(rax);
-			mov(r9d, eax); // save return value
-
-			mov(rax, (uintptr_t)GetMgr);
-			call(rax);
-
-			mov(rdx, rax); // store g_ScenarioInfoMgr
-			mov(eax, r9d); // store the scenario type
-
-			add(rsp, 0x18);
-			pop(r9);
-			pop(r8);
-
-			ret();
-		}
-	} getScenarioTypeStub;
-
-	auto location = hook::get_pattern("0F B6 42 15 48 8B 15 ? ? ? ? 0F B7 4A 10");
-	hook::nop(location, 0xB);
-	hook::call(location, getScenarioTypeStub.GetCode());
-}
-
-static void Patch20()
-{
-	spdlog::info(__func__);
-
-	static struct : jitasm::Frontend
-	{
-		void InternalMain() override
-		{
-			push(r8);
-			push(r9);
-			sub(rsp, 0x18);
-
-			mov(rcx, rsi);   // first param: CScenarioPoint*
-			mov(rax, (uintptr_t)GetSavedScenarioType);
-			call(rax);
-			mov(ecx, eax);
-
-			add(rsp, 0x18);
-			pop(r9);
-			pop(r8);
-
-			movzx(eax, word_ptr[r8 + 0x10]);
-
-			ret();
-		}
-	} getScenarioTypeStub;
-
-	auto location = hook::get_pattern("0F B6 4E 15 41 0F B7 40 ? 3B C8");
-	hook::nop(location, 0x9);
-	hook::call(location, getScenarioTypeStub.GetCode());
-}
-
-static void Patch21()
-{
-	spdlog::info(__func__);
-
-	static struct : jitasm::Frontend
-	{
-		// TODO: verify that this patch is working
-		static uint32_t wrap(CScenarioPoint* p) { spdlog::info("Patch21:{}:({}, {}, {})", (void*)p, p->vPositionAndDirection[0], p->vPositionAndDirection[1], p->vPositionAndDirection[2]); spdlog::default_logger()->flush(); return GetSavedScenarioType(p); }
-		void InternalMain() override
-		{
-			push(rax);
-			sub(rsp, 0x10);
-
-			mov(rcx, rsi);   // first param: CScenarioPoint*
-			mov(rax, (uintptr_t)wrap);
-			call(rax);
-			mov(r9d, eax);
-
-			add(rsp, 0x10);
-			pop(rax);
-
-			ret();
-		}
-	} getScenarioTypeStub;
-
-	auto location = hook::get_pattern("44 0F B6 4E ? 0F 28 44 24 ? 4C 8D 44 24");
-	hook::nop(location, 0x5);
-	hook::call(location, getScenarioTypeStub.GetCode());
-}
-
-static void Patch22()
-{
-	spdlog::info(__func__);
-
-	static struct : jitasm::Frontend
-	{
-		void InternalMain() override
-		{
-			push(r8);
-			push(r9);
-			sub(rsp, 0x18);
-
-			mov(rcx, r14);   // first param: CScenarioPoint*
-			mov(rax, (uintptr_t)GetSavedScenarioType);
-			call(rax);
-			mov(ecx, eax);
-
-			add(rsp, 0x18);
-			pop(r9);
-			pop(r8);
-
-			ret();
-		}
-	} getScenarioTypeStub;
-
-	auto location = hook::get_pattern("41 0F B6 4E ? 85 C9");
-	hook::nop(location, 0x5);
-	hook::call(location, getScenarioTypeStub.GetCode());
-}
-
-static void Patch23()
-{
-	spdlog::info(__func__);
-
-	static struct : jitasm::Frontend
-	{
-		// TODO: verify that this patch is working
-		static uint32_t wrap(CScenarioPoint* p) { spdlog::info("Patch23:{}:({}, {}, {})", (void*)p, p->vPositionAndDirection[0], p->vPositionAndDirection[1], p->vPositionAndDirection[2]); spdlog::default_logger()->flush(); return GetSavedScenarioType(p); }
-		void InternalMain() override
-		{
-			push(r8);
-			push(r9);
-			push(rcx);
-			sub(rsp, 0x20);
-
-			mov(rcx, rdx);   // first param: CScenarioPoint*
-			mov(rax, (uintptr_t)wrap);
-			call(rax);
-
-			add(rsp, 0x20);
-			pop(rcx);
-			pop(r9);
-			pop(r8);
-
-			cmp(eax, dword_ptr[rbx + 0x18C]);
-
-			ret();
-		}
-	} getScenarioTypeStub;
-
-	auto location = hook::get_pattern("0F B6 42 15 3B 83 ? ? ? ? 75 32");
-	hook::nop(location, 0xA);
-	hook::call(location, getScenarioTypeStub.GetCode());
+	// CScenarioPoint::SetModelSet
+	MH_CreateHook(hook::get_pattern("48 89 5C 24 ? 57 48 83 EC 20 C6 41 16 ?"), CScenarioPoint_SetModelSet_detour, (void**)&CScenarioPoint_SetModelSet_orig);
 }
 
 static void Patch24()
 {
 	spdlog::info(__func__);
 
-	// CScenarioPoint::TryCreateCargen
-	static struct : jitasm::Frontend
+	// CScenarioPoint::TryCreateCargen + sub_C1C6E8
+	hook::pattern pattern("0F B6 53 16 48 8B CE E8 ? ? ? ?");
+	pattern.count(2);
+	pattern.for_each_result([](const hook::pattern_match& match)
 	{
-		void InternalMain() override
-		{
-			push(r8);
-			push(r9);
-			sub(rsp, 0x18);
+		auto loc = match.get<uint8_t>();
 
-			// rcx already has CScenarioPoint*
-			mov(rax, (uintptr_t)GetSavedScenarioType);
-			call(rax);
-			mov(esi, eax);
-
-			add(rsp, 0x18);
-			pop(r9);
-			pop(r8);
-
-			test(esi, esi);
-			ret();
-		}
-	} getScenarioTypeStub;
-	{
-		auto location = hook::get_pattern("0F B6 71 15 85 F6 0F 88");
-		hook::nop(location, 0x6);
-		hook::call(location, getScenarioTypeStub.GetCode());
-	}
-
-	static struct : jitasm::Frontend
-	{
-		void InternalMain() override
-		{
-			push(r8);
-			push(r9);
-			sub(rsp, 0x18);
-
-			mov(rcx, rbx); // param: CScenarioPoint*
-			mov(rax, (uintptr_t)GetSavedModelSetId);
-			call(rax);
-			mov(edx, eax);
-
-			add(rsp, 0x18);
-			pop(r9);
-			pop(r8);
-
-			mov(rcx, rdi);
-			ret();
-		}
-	} getModelSetIdStub;
-	{
-		auto location = hook::get_pattern("0F B6 53 16 48 8B CF E8");
-		hook::nop(location, 0x7);
-		hook::call(location, getModelSetIdStub.GetCode());
-	}
+		/*
+		movzx   edx, byte ptr [rbx+16h]                 0F B6 53 16
+			|
+			v
+		movzx   edx, word ptr [rbx+Offset_ModelSetId]    0F B7 53 offset
+		*/
+		hook::put<uint8_t>(loc + 1, 0xB7);
+		hook::put<uint8_t>(loc + 3, Offset_ModelSetId);
+	});
 }
 
 static void Patch25()
@@ -1171,1131 +333,195 @@ static void Patch25()
 	pattern.count(2);
 	pattern.for_each_result([](const hook::pattern_match& match)
 	{
-		hook::put(match.get<void>(2), 0xFFFFFFFF);
+		auto loc = match.get<uint8_t>();
+
+		/*
+		cmp     edx, 0FFh                               81 FA FF 00 00 00
+			|
+			v
+		cmp     edx, InvalidModelSetId                  81 FA nn nn nn nn
+		*/
+		hook::put<uint32_t>(loc + 2, InvalidModelSetId);
 	});
-}
-
-static void Patch26()
-{
-	spdlog::info(__func__);
-
-	// CreateCargen
-	hook::put(hook::get_pattern("81 FD ? ? ? ? 41 0F 95 C6", 2), 0xFFFFFFFF);
-}
-
-struct ExtendedCargen
-{
-	uint32_t ScenarioType;
-};
-static std::unordered_map<CCargen*, ExtendedCargen> g_Cargens;
-
-static void SaveCargen(CCargen* cargen, uint32_t scenarioType)
-{
-	g_Cargens[cargen] = { scenarioType };
-}
-
-static void RemoveCargen(CCargen* cargen)
-{
-	if (g_Cargens.erase(cargen) == 0)
-	{
-		spdlog::warn("RemoveCargen:: CARGEN {} NOT FOUND IN MAP ({}, {}, {})",
-			(void*)cargen, cargen->Position[0], cargen->Position[1], cargen->Position[2]);
-		LogStackTrace<2>();
-	}
-}
-
-static uint32_t GetSavedCargenScenarioType(CCargen* cargen)
-{
-	auto p = g_Cargens.find(cargen);
-	if (p != g_Cargens.end())
-	{
-		return p->second.ScenarioType;
-	}
-	else
-	{
-		spdlog::warn("GetSavedScenarioType:: CARGEN {} NOT FOUND IN MAP ({}, {}, {})",
-			(void*)cargen, cargen->Position[0], cargen->Position[1], cargen->Position[2]);
-		LogStackTrace<2>();
-		return cargen->ScenarioType;
-	}
-}
-
-static void(*CCargen_Initialize_orig)(CCargen* cargen, float x, float y, float z, float dirX, float dirY, float a7, int modelHash, int primaryColor, int secondaryColor,
-									  int pearlescentColor, int extraColor, int interiorColor, int accentColor, int unkFlag, int field30, int field38, int scenarioType,
-									  char unkFlag2, unsigned int *popGroup, char field3F, char field40, bool unkFlag4, char unkFlag3);
-static void CCargen_Initialize_detour(CCargen* cargen, float x, float y, float z, float dirX, float dirY, float a7, int modelHash, int primaryColor, int secondaryColor,
-									  int pearlescentColor, int extraColor, int interiorColor, int accentColor, int unkFlag, int field30, int field38, int scenarioType,
-									  char unkFlag2, unsigned int *popGroup, char field3F, char field40, bool unkFlag4, char unkFlag3)
-{
-	SaveCargen(cargen, scenarioType);
-
-	CCargen_Initialize_orig(cargen, x,  y,  z,  dirX,  dirY,  a7, modelHash, primaryColor, secondaryColor,
-		pearlescentColor, extraColor, interiorColor, accentColor, unkFlag, field30, field38, scenarioType,
-		unkFlag2, popGroup, field3F, field40, unkFlag4, unkFlag3);
-}
-
-static void Patch27()
-{
-	spdlog::info(__func__);
-
-	// CCargen::Initialize
-	MH_CreateHook(hook::get_pattern("41 57 48 8B EC 48 83 EC 30 80 61 3B 7F", -0x12), CCargen_Initialize_detour, (void**)&CCargen_Initialize_orig);
-}
-
-static void(*DeleteCargenFromPool_orig)(void* pool, CCargen* cargen);
-static void DeleteCargenFromPool_detour(void* pool, CCargen* cargen)
-{
-	RemoveCargen(cargen);
-
-	DeleteCargenFromPool_orig(pool, cargen);
-}
-
-static void Patch28()
-{
-	spdlog::info(__func__);
-
-	MH_CreateHook(hook::get_pattern("48 85 D2 74 7E 48 89 5C 24 ? 48 89 6C 24"), DeleteCargenFromPool_detour, (void**)&DeleteCargenFromPool_orig);
-}
-
-static void Patch29()
-{
-	spdlog::info(__func__);
-
-	// CREATE_SCRIPT_VEHICLE_GENERATOR
-	hook::put(hook::get_pattern("C7 84 24 ? ? ? ? ? ? ? ? 83 A4 24", 7), 0xFFFFFFFF);
-}
-
-static void Patch30()
-{
-	spdlog::info(__func__);
-
-	hook::put(hook::get_pattern("C7 84 24 ? ? ? ? ? ? ? ? C1 E9 1C 89 8C 24", 7), 0xFFFFFFFF);
-}
-
-static void Patch31()
-{
-	spdlog::info(__func__);
-
-	static struct : jitasm::Frontend
-	{
-		void InternalMain() override
-		{
-			push(r8);
-			push(r9);
-			sub(rsp, 0x18);
-
-			mov(rcx, rbx); // param: CScenarioPoint*
-			mov(rax, (uintptr_t)GetSavedModelSetId);
-			call(rax);
-			mov(edx, eax);
-
-			add(rsp, 0x18);
-			pop(r9);
-			pop(r8);
-
-			mov(rcx, rsi);
-			ret();
-		}
-	} getModelSetIdStub;
-
-	auto location = hook::get_pattern("0F B6 53 16 48 8B CE E8");
-	hook::nop(location, 0x7);
-	hook::call(location, getModelSetIdStub.GetCode());
-}
-
-static void Patch32()
-{
-	spdlog::info(__func__);
-
-	static struct : jitasm::Frontend
-	{
-		void InternalMain() override
-		{
-			push(r8);
-			push(r9);
-			sub(rsp, 0x18);
-
-			mov(rcx, rsi); // param: CCargen*
-			mov(rax, (uintptr_t)GetSavedCargenScenarioType);
-			call(rax);
-			mov(esi, eax);
-
-			add(rsp, 0x18);
-			pop(r9);
-			pop(r8);
-
-			lea(rdx, qword_ptr[rsp + 0x38]);
-			ret();
-		}
-	} getScenarioTypeStub;
-
-	auto location = hook::get_pattern("0F B6 76 39 48 8D 54 24 ? 8B CE");
-	hook::nop(location, 0x7);
-	hook::call(location, getScenarioTypeStub.GetCode());
 }
 
 static void Patch33()
 {
 	spdlog::info(__func__);
 
-	static struct : jitasm::Frontend
-	{
-		void InternalMain() override
-		{
-			sub(rsp, 0x8);
-
-			mov(rcx, rbx); // param: CCargen*
-			mov(rax, (uintptr_t)GetSavedCargenScenarioType);
-			call(rax);
-			mov(edi, eax);
-
-			add(rsp, 0x8);
-
-			xor(r9d, r9d);
-			ret();
-		}
-	} getScenarioTypeStub;
-	{
-		auto location = hook::get_pattern("0F B6 7B 39 45 33 C9");
-		hook::nop(location, 0x7);
-		hook::call(location, getScenarioTypeStub.GetCode());
-	}
-
-	static struct : jitasm::Frontend
-	{
-		void InternalMain() override
-		{
-			push(r8);
-			push(r9);
-			sub(rsp, 0x18);
-
-			mov(rcx, r13); // param: CScenarioPoint*
-			mov(rax, (uintptr_t)GetSavedModelSetId);
-			call(rax);
-
-			add(rsp, 0x18);
-			pop(r9);
-			pop(r8);
-
-			ret();
-		}
-	} getModelSetIdStub;
-	{
-		auto location = hook::get_pattern("41 0F B6 45 ? 4C 89 65 AF 3D");
-		hook::nop(location, 0x5);
-		hook::call(location, getModelSetIdStub.GetCode());
-	}
-
-	hook::put(hook::get_pattern("4C 89 65 AF 3D ? ? ? ? 74 13 8B D0", 5), 0xFFFFFFFF);
-}
-
-static void Patch34()
-{
-	spdlog::info(__func__);
-
-	static struct : jitasm::Frontend
-	{
-		void InternalMain() override
-		{
-			push(r8);
-			push(r9);
-			push(rax);
-			sub(rsp, 0x20);
-
-			mov(rcx, r15); // param: CCargen*
-			mov(rax, (uintptr_t)GetSavedCargenScenarioType);
-			call(rax);
-			mov(r12d, eax);
-
-			add(rsp, 0x20);
-			pop(rax);
-			pop(r9);
-			pop(r8);
-
-			ret();
-		}
-	} getScenarioTypeStub;
-
-	auto location = hook::get_pattern("45 0F B6 67 ? 48 8B F8");
-	hook::nop(location, 0x5);
-	hook::call_rcx(location, getScenarioTypeStub.GetCode());
-}
-
-static void Patch35()
-{
-	spdlog::info(__func__);
-
-	static struct : jitasm::Frontend
-	{
-		void InternalMain() override
-		{
-			push(r8);
-			push(r9);
-			push(rax);
-			sub(rsp, 0x20);
-
-			lea(rcx, qword_ptr[rbp + 0x57 - 0x70]); // param: CScenarioPoint*
-			mov(rax, (uintptr_t)GetSavedScenarioType);
-			call(rax);
-			mov(r12d, eax);
-
-			add(rsp, 0x20);
-			pop(rax);
-			pop(r9);
-			pop(r8);
-
-			ret();
-		}
-	} getScenarioTypeStub;
-
-	auto location = hook::get_pattern("44 0F B6 65 ? 0D");
-	hook::nop(location, 0x5);
-	hook::call_rcx(location, getScenarioTypeStub.GetCode());
-}
-
-static void Patch36()
-{
-	spdlog::info(__func__);
-
-	static struct : jitasm::Frontend
-	{
-		void InternalMain() override
-		{
-			push(r8);
-			push(rcx);
-			sub(rsp, 0x18);
-
-			mov(rcx, rdx); // param: CCargen*
-			mov(rax, (uintptr_t)GetSavedCargenScenarioType);
-			call(rax);
-			mov(r9d, eax);
-
-			add(rsp, 0x18);
-			pop(rcx);
-			pop(r8);
-
-			ret();
-		}
-	} getCargenScenarioTypeStub;
-	{
-		auto location = hook::get_pattern("44 0F B6 4A ? 49 8B D8");
-		hook::nop(location, 0x5);
-		hook::call(location, getCargenScenarioTypeStub.GetCode());
-	}
-
-	static struct : jitasm::Frontend
-	{
-		// TODO: verify that this patch is working
-		static uint32_t wrap(CScenarioPoint* p) { spdlog::info("Patch36:getPointScenarioTypeStub:{}:({}, {}, {})", (void*)p, p->vPositionAndDirection[0], p->vPositionAndDirection[1], p->vPositionAndDirection[2], (void*)p); spdlog::default_logger()->flush(); return GetSavedScenarioType(p); }
-		void InternalMain() override
-		{
-			push(r8);
-			push(rax);
-			sub(rsp, 0x18);
-
-			mov(rcx, rax); // param: CScenarioPoint*
-			mov(rax, (uintptr_t)wrap);
-			call(rax);
-			mov(r9d, eax);
-
-			add(rsp, 0x18);
-			pop(rax);
-			pop(r8);
-
-			ret();
-		}
-	} getPointScenarioTypeStub;
-	{
-		auto location = hook::get_pattern("44 0F B6 48 ? 48 8D 0D");
-		hook::nop(location, 0x5);
-		hook::call_rcx(location, getPointScenarioTypeStub.GetCode());
-	}
-}
-
-static void Patch37()
-{
-	spdlog::info(__func__);
-
-	static struct : jitasm::Frontend
-	{
-		void InternalMain() override
-		{
-			push(rcx);
-			sub(rsp, 0x10);
-
-			mov(rcx, qword_ptr[rbx + 0x48]); // param: CCargen*
-			mov(rax, (uintptr_t)GetSavedCargenScenarioType);
-			call(rax);
-
-			add(rsp, 0x10);
-			pop(rcx);
-
-			mov(rdx, qword_ptr[rbx + 0x48]);
-			cmp(eax, 0xFFFFFFFF);
-			ret();
-		}
-	} getScenarioTypeStub;
-
-	auto location = hook::get_pattern("48 8B 53 48 80 7A 39 FF");
-	hook::nop(location, 0x8);
-	hook::call(location, getScenarioTypeStub.GetCode());
-}
-
-static void Patch38()
-{
-	spdlog::info(__func__);
-
-	static struct : jitasm::Frontend
-	{
-		const uintptr_t returnAddr = (uintptr_t)hook::get_pattern("41 8A D6 48 8B CB E8 ? ? ? ? 84 C0 74 34");
-		const uintptr_t jumpAddr = (uintptr_t)hook::get_pattern("40 84 F6 74 4E 48 8D 55 30");
-
-		void InternalMain() override
-		{
-			sub(rsp, 0x8);
-
-			mov(rcx, rbx); // param: CCargen*
-			mov(rax, (uintptr_t)GetSavedCargenScenarioType);
-			call(rax);
-
-			add(rsp, 0x8);
-
-			cmp(eax, 0xFFFFFFFF);
-			jz("doJump");
-
-			mov(rax, returnAddr);
-			jmp(rax);
-
-
-			L("doJump");
-			mov(rax, jumpAddr);
-			jmp(rax);
-		}
-	} cmpScenarioTypeStub;
-
-	auto location = hook::get_pattern("80 7B 39 FF 74 43");
-	hook::nop(location, 0x6);
-	hook::jump(location, cmpScenarioTypeStub.GetCode());
-}
-
-static void Patch39()
-{
-	spdlog::info(__func__);
-
-	static struct : jitasm::Frontend
-	{
-		void InternalMain() override
-		{
-			push(r8);
-			push(r9);
-			sub(rsp, 0x18);
-
-			mov(rcx, rbx); // param: CCargen*
-			mov(rax, (uintptr_t)GetSavedCargenScenarioType);
-			call(rax);
-
-			add(rsp, 0x18);
-			pop(r9);
-			pop(r8);
-
-			cmp(eax, 0xFFFFFFFF);
-			movaps(xmm8, xmm0);
-			ret();
-		}
-	} cmpScenarioTypeStub;
-
-	auto location = hook::get_pattern("80 7B 39 FF 44 0F 28 C0");
-	hook::nop(location, 0x8);
-	hook::call(location, cmpScenarioTypeStub.GetCode());
-}
-
-static void Patch40()
-{
-	spdlog::info(__func__);
-
-	static struct : jitasm::Frontend
-	{
-		const uintptr_t returnAddr = (uintptr_t)hook::get_pattern("F3 0F 10 3D ? ? ? ? F3 0F 10 35 ? ? ? ? 48 8B CB");
-		const uintptr_t jumpAddr = (uintptr_t)hook::get_pattern("F3 0F 10 44 24 ? F3 0F 5C 43 ? 0F 2F 05 ? ? ? ? 73 07");
-
-		void InternalMain() override
-		{
-			push(r8);
-			push(r9);
-			sub(rsp, 0x18);
-
-			mov(rcx, rbx); // param: CCargen*
-			mov(rax, (uintptr_t)GetSavedCargenScenarioType);
-			call(rax);
-
-			add(rsp, 0x18);
-			pop(r9);
-			pop(r8);
-
-			cmp(eax, 0xFFFFFFFF);
-			jz("doJump");
-
-			mov(rax, returnAddr);
-			jmp(rax);
-
-
-			L("doJump");
-			mov(rax, jumpAddr);
-			jmp(rax);
-		}
-	} cmpScenarioTypeStub;
-
-	auto location = hook::get_pattern("80 7B 39 FF 74 7C F3 0F 10 3D");
-	hook::nop(location, 0x6);
-	hook::jump(location, cmpScenarioTypeStub.GetCode());
-}
-
-static void Patch41()
-{
-	spdlog::info(__func__);
-
-	struct cmpScenarioTypeStub : jitasm::Frontend
-	{
-		const uintptr_t returnAddr, jumpAddr;
-
-		cmpScenarioTypeStub(void* returnAddr, void* jumpAddr)
-			: returnAddr((uintptr_t)returnAddr), jumpAddr((uintptr_t)jumpAddr)
-		{
-		}
-
-		void InternalMain() override
-		{
-			push(r8);
-			push(r9);
-			push(rcx);
-			sub(rsp, 0x20);
-
-			// rcx already is CCargen*
-			mov(rax, (uintptr_t)GetSavedCargenScenarioType);
-			call(rax);
-
-			add(rsp, 0x20);
-			pop(rcx);
-			pop(r9);
-			pop(r8);
-
-			cmp(eax, 0xFFFFFFFF);
-			jz("doJump");
-			mov(rax, returnAddr);
-			jmp(rax);
-
-
-			L("doJump");
-			mov(rax, jumpAddr);
-			jmp(rax);
-		}
-	};
-	{
-		static cmpScenarioTypeStub stub(
-			hook::get_pattern("E8 ? ? ? ? 48 8B D8 48 85 C0 0F 84 ? ? ? ? 8A 48 10"),
-			hook::get_pattern("49 8B CE E8 ? ? ? ? 41 8B 16 66 89 45 40")
-		);
-		auto location = hook::get_pattern("80 79 39 FF 0F 84 ? ? ? ? E8 ? ? ? ? 48 8B D8");
-		hook::nop(location, 0xA);
-		hook::jump(location, stub.GetCode());
-	}
-	{
-		static cmpScenarioTypeStub stub(
-			hook::get_pattern("F6 41 3A 40 75 28 E8"),
-			hook::get_pattern("C0 E8 06 A8 01 74 04 32 C0 EB 02 B0 01", 0xB)
-		);
-		auto location = hook::get_pattern("80 79 39 FF 74 2E F6 41 3A 40");
-		hook::nop(location, 0x6);
-		hook::jump(location, stub.GetCode());
-	}
-	{
-		static cmpScenarioTypeStub stub(
-			hook::get_pattern("E8 ? ? ? ? 48 85 C0 74 F2 0F B7 40 10"),
-			hook::get_pattern("32 C0 EB 14 E8")
-		);
-		auto location = hook::get_pattern("80 79 39 FF 75 04");
-		hook::nop(location, 0x6);
-		hook::jump(location, stub.GetCode());
-	}
-	{
-		static cmpScenarioTypeStub stub(
-			hook::get_pattern("F6 41 3A 40 75 16"),
-			hook::get_pattern("8B 48 24 B0 01 C1 E9 0A", 0xC)
-		);
-		auto location = hook::get_pattern("80 79 39 FF 74 1C");
-		hook::nop(location, 0x6);
-		hook::jump(location, stub.GetCode());
-	}
-	{
-		static cmpScenarioTypeStub stub(
-			hook::get_address<void*>(hook::get_pattern("80 79 39 FF 0F 85 ? ? ? ? 40 38 35", 0x6)),
-			hook::get_pattern("40 38 35 ? ? ? ? 74 2E F3 0F 10 01")
-		);
-		auto location = hook::get_pattern("80 79 39 FF 0F 85 ? ? ? ? 40 38 35");
-		hook::nop(location, 0xA);
-		hook::jump(location, stub.GetCode());
-	}
-	{
-		static cmpScenarioTypeStub stub(
-			hook::get_pattern("74 19 E8 ? ? ? ? 48 85 C0 74 0F 8B 88", 0x2),
-			hook::get_pattern("8B 88 ? ? ? ? B0 01 C1 E9 0A 84 C8", 0xF)
-		);
-		auto location = hook::get_pattern("80 79 39 FF 74 19");
-		hook::nop(location, 0x6);
-		hook::jump(location, stub.GetCode());
-	}
-}
-
-static void Patch42()
-{
-	spdlog::info(__func__);
-
-	struct cmpScenarioTypeStub : jitasm::Frontend
-	{
-		const uintptr_t returnAddr, jumpAddr;
-
-		cmpScenarioTypeStub(void* returnAddr, void* jumpAddr)
-			: returnAddr((uintptr_t)returnAddr), jumpAddr((uintptr_t)jumpAddr)
-		{
-		}
-
-		void InternalMain() override
-		{
-			push(r8);
-			push(r9);
-			sub(rsp, 0x18);
-
-			mov(rcx, rdi); // param: CCargen*
-			mov(rax, (uintptr_t)GetSavedCargenScenarioType);
-			call(rax);
-
-			add(rsp, 0x18);
-			pop(r9);
-			pop(r8);
-
-			cmp(eax, 0xFFFFFFFF);
-			jz("doJump");
-			mov(rax, returnAddr);
-			jmp(rax);
-
-
-			L("doJump");
-			mov(rax, jumpAddr);
-			jmp(rax);
-		}
-	};
-	{
-		static cmpScenarioTypeStub stub(
-			hook::get_pattern("80 7F 39 FF 74 5E", 0x6),
-			hook::get_pattern("8A 4F 3A 48 8B C3")
-		);
-		auto location = hook::get_pattern("80 7F 39 FF 74 5E");
-		hook::nop(location, 0x6);
-		hook::jump(location, stub.GetCode());
-	}
-	{
-		static cmpScenarioTypeStub stub(
-			hook::get_pattern("83 BE ? ? ? ? ? 0F 84 ? ? ? ? 8A 47 3B"),
-			hook::get_pattern("8A 47 3B A8 10 75 65")
-		);
-		auto location = hook::get_pattern("80 7F 39 FF 74 0D");
-		hook::nop(location, 0x6);
-		hook::jump(location, stub.GetCode());
-	}
-}
-
-static void Patch43()
-{
-	spdlog::info(__func__);
-
-	static struct : jitasm::Frontend
-	{
-		const uintptr_t returnAddr = (uintptr_t)hook::get_pattern("48 8B CB E8 ? ? ? ? 48 85 C0 74 0E 8B 40 24");
-		const uintptr_t jumpAddr = (uintptr_t)hook::get_pattern("48 8B 47 20 48 8B D6 48 8B CF 44 38 65 50");
-
-		void InternalMain() override
-		{
-			sub(rsp, 0x8);
-
-			mov(rcx, rbx); // param: CCargen*
-			mov(rax, (uintptr_t)GetSavedCargenScenarioType);
-			call(rax);
-
-			add(rsp, 0x8);
-
-			cmp(eax, 0xFFFFFFFF);
-			jz("doJump");
-			mov(rax, returnAddr);
-			jmp(rax);
-
-
-			L("doJump");
-			mov(rax, jumpAddr);
-			jmp(rax);
-		}
-	} cmpScenarioTypeStub;
-	auto location = hook::get_pattern("80 7B 39 FF 74 1B");
-	hook::nop(location, 0x6);
-	hook::jump(location, cmpScenarioTypeStub.GetCode());
-}
-
-static void Patch44()
-{
-	spdlog::info(__func__);
-
-	struct cmpScenarioTypeStub : jitasm::Frontend
-	{
-		const uintptr_t returnAddr, jumpAddr;
-
-		cmpScenarioTypeStub(void* returnAddr, void* jumpAddr)
-			: returnAddr((uintptr_t)returnAddr), jumpAddr((uintptr_t)jumpAddr)
-		{
-		}
-
-		void InternalMain() override
-		{
-			push(r8);
-			push(r9);
-			sub(rsp, 0x18);
-
-			mov(rcx, rbx); // param: CCargen*
-			mov(rax, (uintptr_t)GetSavedCargenScenarioType);
-			call(rax);
-
-			add(rsp, 0x18);
-			pop(r9);
-			pop(r8);
-
-			cmp(eax, 0xFFFFFFFF);
-			jnz("doJump");
-			mov(rax, returnAddr);
-			jmp(rax);
-
-
-			L("doJump");
-			mov(rax, jumpAddr);
-			jmp(rax);
-		}
-	};
-	{
-		static cmpScenarioTypeStub stub(
-			hook::get_pattern("EB 48 E8 ? ? ? ? 44 8B 0D"),
-			hook::get_pattern("F3 0F 10 05 ? ? ? ? 0F 2F 05 ? ? ? ? 0F 87 ? ? ? ? B0 01", 0x15)
-		);
-		auto location = hook::get_pattern("80 7B 39 FF 0F 85");
-		hook::nop(location, 0xA);
-		hook::jump(location, stub.GetCode());
-	}
-	{
-		static cmpScenarioTypeStub stub(
-			hook::get_pattern("24 FD 88 43 3A EB DC"),
-			hook::get_pattern("F6 43 3D 01 74 2F E8")
-		);
-		auto location = hook::get_pattern("80 7B 39 FF 75 07");
-		hook::nop(location, 0x6);
-		hook::jump(location, stub.GetCode());
-	}
-}
-
-static void Patch45()
-{
-	spdlog::info(__func__);
-
-	struct cmpScenarioTypeStub : jitasm::Frontend
-	{
-		const uintptr_t returnAddr, jumpAddr;
-
-		cmpScenarioTypeStub(void* returnAddr, void* jumpAddr)
-			: returnAddr((uintptr_t)returnAddr), jumpAddr((uintptr_t)jumpAddr)
-		{
-		}
-
-		void InternalMain() override
-		{
-			push(r8);
-			push(r9);
-			sub(rsp, 0x18);
-
-			mov(rcx, rbx); // param: CCargen*
-			mov(rax, (uintptr_t)GetSavedCargenScenarioType);
-			call(rax);
-
-			add(rsp, 0x18);
-			pop(r9);
-			pop(r8);
-
-			cmp(eax, 0xFFFFFFFF);
-			jz("doJump");
-			mov(rax, returnAddr);
-			jmp(rax);
-
-
-			L("doJump");
-			mov(rax, jumpAddr);
-			jmp(rax);
-		}
-	};
-	{
-		static cmpScenarioTypeStub stub(
-			hook::get_pattern("84 53 3A 75 6D 48 8B 05"),
-			hook::get_pattern("84 53 3C 74 2B F6 43 3B 40")
-		);
-		auto location = hook::get_pattern("80 7B 39 FF 74 29");
-		hook::nop(location, 0x6);
-		hook::jump(location, stub.GetCode());
-	}
-	{
-		static cmpScenarioTypeStub stub(
-			hook::get_pattern("41 C6 06 01 41 BE"),
-			hook::get_pattern("E9 ? ? ? ? 48 8B CF E8 ? ? ? ? 32 C0 48 8B 5C 24", 0x5)
-		);
-		auto location = hook::get_pattern("80 7B 39 FF 0F 84");
-		hook::nop(location, 0xA);
-		hook::jump(location, stub.GetCode());
-	}
-	{
-		static cmpScenarioTypeStub stub(
-			hook::get_pattern("48 8B D6 48 8B CB E8 ? ? ? ? 84 C0 75 03"),
-			hook::get_pattern("44 09 36 B0 01 E9")
-		);
-		auto location = hook::get_pattern("80 7B 39 FF 74 0F");
-		hook::nop(location, 0x6);
-		hook::jump(location, stub.GetCode());
-	}
-
-
-	struct cmpScenarioTypeStub2 : jitasm::Frontend
-	{
-		const uintptr_t returnAddr, jumpAddr;
-
-		cmpScenarioTypeStub2(void* returnAddr, void* jumpAddr)
-			: returnAddr((uintptr_t)returnAddr), jumpAddr((uintptr_t)jumpAddr)
-		{
-		}
-
-		void InternalMain() override
-		{
-			push(r8);
-			push(r9);
-			push(rax);
-			sub(rsp, 0x20);
-
-			mov(rcx, rbx); // param: CCargen*
-			mov(rax, (uintptr_t)GetSavedCargenScenarioType);
-			call(rax);
-			mov(ecx, eax); // save return value
-
-			add(rsp, 0x20);
-			pop(rax);
-			pop(r9);
-			pop(r8);
-
-			mov(dword_ptr[rbx + 0x20], eax);
-			cmp(ecx, 0xFFFFFFFF);
-			jnz("doJump");
-			mov(rcx, returnAddr);
-			jmp(rcx);
-
-
-			L("doJump");
-			mov(rcx, jumpAddr);
-			jmp(rcx);
-		}
-	};
-	{
-		static cmpScenarioTypeStub2 stub(
-			hook::get_pattern("F6 43 3B 40 75 04"),
-			hook::get_pattern("33 C0 80 63 3A FE 84 C0")
-		);
-		auto location = hook::get_pattern("80 7B 39 FF 89 43 20 75 0A");
-		hook::nop(location, 0x9);
-		hook::jump_rcx(location, stub.GetCode());
-	}
-}
-
-static void Patch46()
-{
-	spdlog::info(__func__);
-
-	static struct : jitasm::Frontend
-	{
-		void InternalMain() override
-		{
-			sub(rsp, 0x8);
-
-			// rcx already is CCargen*
-			mov(rax, (uintptr_t)GetSavedCargenScenarioType);
-			call(rax);
-
-			add(rsp, 0x8);
-
-			mov(ecx, eax);
-			test(ecx, ecx);
-
-			ret();
-		}
-	} getScenarioTypeStub;
-	auto location = hook::get_pattern("0F B6 49 39 85 C9");
-	hook::nop(location, 0x6);
-	hook::call(location, getScenarioTypeStub.GetCode());
-}
-
-static void Patch47()
-{
-	spdlog::info(__func__);
-
-	static struct : jitasm::Frontend
-	{
-		// TODO: verify that this patch is working
-		static uint32_t wrap(CCargen* c) { spdlog::info("Patch47:cmpScenarioTypeStub:{}:({}, {}, {})", (void*)c, c->Position[0], c->Position[1], c->Position[2]); spdlog::default_logger()->flush(); return GetSavedCargenScenarioType(c); }
-		void InternalMain() override
-		{
-			push(rcx);
-			push(rdx);
-			sub(rsp, 0x18);
-
-			// rcx already is CCargen*
-			mov(rax, (uintptr_t)wrap);
-			call(rax);
-
-			add(rsp, 0x18);
-			pop(rdx);
-			pop(rcx);
-
-			cmp(eax, 0xFFFFFFFF);
-			mov(r14, rdx);
-
-			ret();
-		}
-	} cmpScenarioTypeStub;
-	{
-		auto location = hook::get_pattern("80 79 39 FF 4C 8B F2");
-		hook::nop(location, 0x7);
-		hook::jump(location, cmpScenarioTypeStub.GetCode());
-	}
-
-	static struct : jitasm::Frontend
-	{
-		const uintptr_t returnAddr = (uintptr_t)hook::get_pattern("F6 47 3A 04 74 78");
-		const uintptr_t jumpAddr = (uintptr_t)hook::get_pattern("0F B6 05 ? ? ? ? 48 8B 5C 24");
-
-		// TODO: verify that this patch is working
-		static uint32_t wrap(CCargen* c) { spdlog::info("Patch47:cmpScenarioTypeStub2:{}:({}, {}, {})", (void*)c, c->Position[0], c->Position[1], c->Position[2]); spdlog::default_logger()->flush(); return GetSavedCargenScenarioType(c); }
-		void InternalMain() override
-		{
-			sub(rsp, 0x8);
-
-			mov(rcx, rdi); // param: CCargen*
-			mov(rax, (uintptr_t)wrap);
-			call(rax);
-
-			add(rsp, 0x8);
-
-			cmp(eax, 0xFFFFFFFF);
-			jz("doJump");
-			mov(rax, returnAddr);
-			jmp(rax);
-
-
-			L("doJump");
-			mov(rax, jumpAddr);
-			jmp(rax);
-		}
-	} cmpScenarioTypeStub2;
-	{
-		auto location = hook::get_pattern("80 7F 39 FF 74 7E");
-		hook::nop(location, 0x6);
-		hook::jump(location, cmpScenarioTypeStub2.GetCode());
-	}
-}
-
-static void Patch48()
-{
-	spdlog::info(__func__);
-
-	static struct : jitasm::Frontend
-	{
-		void InternalMain() override
-		{
-			push(rcx);
-			sub(rsp, 0x10);
-			
-			mov(rcx, r15); // param: CScenarioPoint*
-			mov(rax, (uintptr_t)GetSavedScenarioType);
-			call(rax);
-			mov(edx, eax);
-
-			add(rsp, 0x10);
-			pop(rcx);
-
-			ret();
-		}
-	} getScenarioTypeStub;
-	auto location = hook::get_pattern("41 0F B6 57 ? 4C 8D 4C 24");
-	hook::nop(location, 0x5);
-	hook::call(location, getScenarioTypeStub.GetCode());
+	// sub_C110EC
+	auto loc = hook::get_pattern<uint8_t>("41 0F B6 45 ? 4C 89 65 AF 3D ? ? ? ?");
+
+	/*
+	movzx   eax, byte ptr [r13+16h]                 41 0F B6 45 16
+		|
+		v
+	movzx   eax, word ptr [r13+Offset_ModelSetId]    41 0F B7 45 offset
+	*/
+	hook::put<uint8_t>(loc + 2, 0xB7);
+	hook::put<uint8_t>(loc + 4, Offset_ModelSetId);
+
+	/*
+	cmp     eax, 0FFh                               3D FF 00 00 00
+		|
+		v
+	cmp     eax, InvalidModelSetId                  3D nn nn nn nn
+	*/
+	hook::put<uint32_t>(loc + 9 + 1, InvalidModelSetId);
 }
 
 static void Patch49()
 {
 	spdlog::info(__func__);
-
-	static struct : jitasm::Frontend
+	
+	// sub_BF38F4
+	auto loc = hook::get_pattern<uint8_t>("41 80 7E ? ? 45 0F B6 E4 B8 ? ? ? ?");
+	
+	/*
+	cmp     byte ptr [r14+16h], 0FFh                   41 80 7E 16 FF
+	movzx   r12d, r12b                                 45 0F B6 E4    ; this instruction seems redundant as afterwards only r12b is read,
+	                                                                  ; so we can overwrite it and nop the remaining bytes
+		|
+		v
+	cmp     word ptr [r14+Offset_ModelSetId], 0FFFFh   66 41 83 7E offset FF
+	nop                                                90
+	nop                                                90
+	nop                                                90
+	*/
+	const uint8_t patch[9]
 	{
-		void InternalMain() override
-		{
-			sub(rsp, 0x8);
-
-			mov(rcx, r14); // param: CScenarioPoint*
-			mov(rax, (uintptr_t)GetSavedModelSetId);
-			call(rax);
-
-			add(rsp, 0x8);
-
-			cmp(eax, 0xFFFFFFFF);
-
-			ret();
-		}
-	} cmpModelSetIdStub;
-	auto location = hook::get_pattern("41 80 7E ? ? 45 0F B6 E4");
-	hook::nop(location, 0x5);
-	hook::call(location, cmpModelSetIdStub.GetCode());
+		0x66, 0x41, 0x83, 0x7E, Offset_ModelSetId, 0xFF,
+		0x90, 0x90, 0x90
+	};
+	memcpy(loc, patch, std::size(patch));
 }
 
 static void Patch50()
 {
 	spdlog::info(__func__);
 
-	static struct : jitasm::Frontend
+	// CScenarioPoint::GetScenarioType
+	auto loc = hook::get_pattern<uint8_t>("0F B7 41 10 0F B6 49 15 C1 E8 0E");
+
+	/*
+	movzx   eax, word ptr [rcx+10h]                    0F B7 41 10
+	movzx   ecx, byte ptr [rcx+15h]                    0F B6 49 15
+	shr     eax, 0Eh                                   C1 E8 0E
+	and     eax, 1                                     83 E0 01
+	shl     eax, 8                                     C1 E0 08
+	or      eax, ecx                                   0B C1
+	retn                                               C3
+		|
+		v
+	movzx   eax, byte ptr [rcx+Offset_iTypeLo]         0F B6 41 offset
+	movzx   ecx, byte ptr [rcx+Offset_iTypeHi]         0F B6 49 offset
+	shl     ecx, 8                                     C1 E1 08
+	or      eax, ecx                                   0B C1
+	retn                                               C3
+	*/
+	const uint8_t patch[14]
 	{
-		void InternalMain() override
-		{
-			push(r8);
-			push(r9);
-			sub(rsp, 0x18);
-
-			lea(rcx, qword_ptr[rbp - 0x80]); // param: CScenarioPoint*
-			mov(rax, (uintptr_t)GetSavedScenarioType);
-			call(rax);
-			mov(ecx, eax);
-
-			add(rsp, 0x18);
-			pop(r9);
-			pop(r8);
-
-			ret();
-		}
-	} getScenarioTypeStub;
-	auto location = hook::get_pattern("0F B6 45 95 8B C8");
-	hook::nop(location, 0x6);
-	hook::call(location, getScenarioTypeStub.GetCode());
+		0x0F, 0xB6, 0x41, Offset_iTypeLo,
+		0x0F, 0xB6, 0x49, Offset_iTypeHi,
+		0xC1, 0xE1, 0x08,
+		0x0B, 0xC1,
+		0xC3,
+	};
+	memcpy(loc, patch, std::size(patch));
 }
 
 static void Patch51()
 {
 	spdlog::info(__func__);
 
-	static struct : jitasm::Frontend
+	// CScenarioPoint::InitFromSpawnPointDef
+	auto loc = hook::get_pattern<uint8_t>("8B C6 40 88 73 15 C1 E8 08");
+
+	/*
+	esi = scenario type index
+	rbx = CScenarioPoint*
+
+	mov     eax, esi                                   8B C6
+	mov     [rbx+15h], sil                             40 88 73 15
+	shr     eax, 8                                     C1 E8 08
+	and     ax, 1                                      66 83 E0 01
+	shl     ax, 0Eh                                    66 C1 E0 0E
+	or      [rbx+10h], ax                              66 09 43 10
+		|
+		v
+	mov     [rbx+Offset_iTypeLo], sil                  40 88 73 offset
+	shr     esi, 8                                     C1 EE 08
+	mov     [rbx+Offset_iTypeHi], sil                  40 88 73 offset
+	*/
+	const uint8_t patch[11]
 	{
-		void InternalMain() override
-		{
-			push(rcx);
-			push(rdx);
-			push(r8);
-			push(r9);
-			sub(rsp, 0x30);
-
-			mov(rcx, rbx); // param: CCargen*
-			mov(rax, (uintptr_t)GetSavedCargenScenarioType);
-			call(rax);
-
-			add(rsp, 0x30);
-			pop(r9);
-			pop(r8);
-			pop(rdx);
-			pop(rcx);
-
-			cmp(eax, 0xFFFFFFFF);
-
-			// workaround since jitasm doesn't have `sil` register, so can't do `setnz(sil)`
-			jnz("set");	
-			mov(esi, 0);
-			ret();
-
-			L("set");
-			mov(esi, 1);
-			ret();
-		}
-	} cmpScenarioTypeStub;
-	auto location = hook::get_pattern("80 7B 39 FF 40 0F 95 C6");
-	hook::nop(location, 0x8);
-	hook::call(location, cmpScenarioTypeStub.GetCode());
+		0x40, 0x88, 0x73, Offset_iTypeLo,
+		0xC1, 0xEE, 0x08,
+		0x40, 0x88, 0x73, Offset_iTypeHi,
+	};
+	hook::patch_and_nop_remaining<21>(loc, patch);
 }
 
 static void Patch52()
 {
 	spdlog::info(__func__);
 
-	static struct : jitasm::Frontend
+	// CSpawnPointOverrideExtension::OverrideScenarioPoint
+
+	/*
+	eax = scenario type index
+	rbx = CScenarioPoint*
+
+	mov     ecx, eax                                   8B C8      
+	mov     [rbx+15h], al                              88 43 15   
+	shr     ecx, 8                                     C1 E9 08   
+	and     cx, bp                                     66 23 CD   
+	shl     cx, 0Eh                                    66 C1 E1 0E
+	or      [rbx+10h], cx                              66 09 4B 10
+		|
+		v
+	mov     [rbx+Offset_iTypeLo], al                   88 43 offset
+	shr     eax, 8                                     C1 E8 08
+	mov     [rbx+Offset_iTypeHi], al                   88 43 offset
+	*/
 	{
-		void InternalMain() override
+		auto loc = hook::get_pattern<uint8_t>("8B C8 88 43 15 C1 E9 08");
+		const uint8_t patch[9]
 		{
-			push(r8);
-			push(r9);
-			push(rax);
-			sub(rsp, 0x20);
-
-			mov(rcx, rax); // param: CCargen*
-			mov(rax, (uintptr_t)GetSavedCargenScenarioType);
-			call(rax);
-			mov(ecx, eax); // save result
-
-			add(rsp, 0x20);
-			pop(rax);
-			pop(r9);
-			pop(r8);
-
-			cmp(ecx, 0xFFFFFFFF);
-			mov(qword_ptr[rbp - 0x19], r13);
-
-			ret();
-		}
-	} cmpScenarioTypeStub;
-	{
-		auto location = hook::get_pattern("80 78 39 FF 4C 89 6D E7");
-		hook::nop(location, 0x8);
-		hook::call_rcx(location, cmpScenarioTypeStub.GetCode());
+			0x88, 0x43, Offset_iTypeLo,
+			0xC1, 0xE8, 0x08,
+			0x88, 0x43, Offset_iTypeHi,
+		};
+		hook::patch_and_nop_remaining<19>(loc, patch);
 	}
 
-	static struct : jitasm::Frontend
+	/*
+	movzx   ecx, word ptr [rbx+10h]                    0F B7 4B 10
+	movzx   edx, byte ptr [rbx+15h]                    0F B6 53 15
+	shr     ecx, 0Eh                                   C1 E9 0E
+	mov     [rsp+28h+a2], eax                          89 44 24 30
+	and     ecx, ebp                                   23 CD
+	shl     ecx, 8                                     C1 E1 08
+	or      ecx, edx                                   0B CA
+		|
+		v
+	movzx   ecx, byte ptr [rbx+Offset_iTypeLo]         0F B6 4B offset
+	movzx   edx, byte ptr [rbx+Offset_iTypeHi]         0F B6 53 offset
+	shl     edx, 8                                     C1 E2 08
+	or      ecx, edx                                   0B CA
+	mov     [rsp+28h+a2], eax                          89 44 24 30
+	*/
 	{
-		void InternalMain() override
+		auto loc = hook::get_pattern<uint8_t>("0F B7 4B 10 0F B6 53 15 C1 E9 0E");
+		const uint8_t patch[17]
 		{
-			mov(rdx, qword_ptr[r14 + 0x48]);
-
-			push(r8);
-			push(r9);
-			push(rdx);
-			sub(rsp, 0x20);
-
-			mov(rcx, rdx); // param: CCargen*
-			mov(rax, (uintptr_t)GetSavedCargenScenarioType);
-			call(rax);
-
-			add(rsp, 0x20);
-			pop(rdx);
-			pop(r9);
-			pop(r8);
-
-			cmp(eax, 0xFFFFFFFF);
-
-			ret();
-		}
-	} cmpScenarioTypeStub2;
-	{
-		auto location = hook::get_pattern("49 8B 56 48 80 7A 39 FF");
-		hook::nop(location, 0x8);
-		hook::call(location, cmpScenarioTypeStub2.GetCode());
+			0x0F, 0xB6, 0x4B, Offset_iTypeLo,
+			0x0F, 0xB6, 0x53, Offset_iTypeHi,
+			0xC1, 0xE2, 0x08,
+			0x0B, 0xCA,
+			0x89, 0x44, 0x24, 0x30,
+		};
+		hook::patch_and_nop_remaining<22>(loc, patch);
 	}
 }
 
@@ -2303,66 +529,68 @@ static void Patch53()
 {
 	spdlog::info(__func__);
 
-	struct cmpScenarioTypeStub : jitasm::Frontend
-	{
-		const uintptr_t returnAddr, jumpAddr;
-		const bool ifZero;
+	// CScenarioPoint::ctorWithEntity
 
-		cmpScenarioTypeStub(void* returnAddr, void* jumpAddr, bool ifZero)
-			: returnAddr((uintptr_t)returnAddr), jumpAddr((uintptr_t)jumpAddr), ifZero(ifZero)
+	/*
+	ecx = scenario type index
+	rbx = CScenarioPoint*
+
+	and     ecx, 1FFh                                  81 E1 FF 01 00 00
+	mov     [rbx+15h], cl                              88 4B 15
+	mov     eax, ecx                                   8B C1
+	shr     eax, 8                                     C1 E8 08
+	shl     ax, 0Eh                                    66 C1 E0 0E
+	xor     ax, dx                                     66 33 C2
+	and     ax, r8w                                    66 41 23 C0
+	xor     ax, dx                                     66 33 C2
+	mov     [rbx+10h], ax                              66 89 43 10
+		|
+		v
+	mov     [rbx+Offset_iTypeLo], cl                   88 4B offset
+	shr     ecx, 8                                     C1 E9 08
+	mov     [rbx+Offset_iTypeHi], cl                   88 4B offset
+	*/
+	{
+		auto loc = hook::get_pattern<uint8_t>("81 E1 ? ? ? ? 88 4B 15 8B C1");
+		const uint8_t patch[9]
 		{
-		}
+			0x88, 0x4B, Offset_iTypeLo,
+			0xC1, 0xE9, 0x08,
+			0x88, 0x4B, Offset_iTypeHi,
+		};
+		hook::patch_and_nop_remaining<32>(loc, patch);
+	}
 
-		void InternalMain() override
+	/*
+	movzx   ecx, word ptr [rbx+10h]                    0F B7 4B 10
+	shr     ecx, 0Eh                                   C1 E9 0E
+	movzx   edx, byte ptr [rbx+15h]                    0F B6 53 15
+	and     ecx, 1                                     83 E1 01
+	mov     [rsp+38h+a2], eax                          89 44 24 40
+	shl     ecx, 8                                     C1 E1 08
+	or      ecx, edx                                   0B CA
+		|
+		v
+	movzx   ecx, byte ptr [rbx+Offset_iTypeHi]        0F B6 4B offset
+	movzx   edx, byte ptr [rbx+Offset_iTypeLo]        0F B6 53 offset
+	nop                                               90
+	nop                                               90
+	nop                                               90
+	nop                                               90
+	nop                                               90
+	nop                                               90
+	mov     [rsp+38h+a2], eax                         89 44 24 40
+	shl     ecx, 8                                    C1 E1 08
+	or      ecx, edx                                  0B CA
+	*/
+	{
+		auto loc = hook::get_pattern<uint8_t>("0F B7 4B 10 C1 E9 0E 0F B6 53 15");
+		const uint8_t patch[8]
 		{
-			sub(rsp, 0x8);
-
-			mov(rcx, r14); // param: CCargen*
-			mov(rax, (uintptr_t)GetSavedCargenScenarioType);
-			call(rax);
-
-			add(rsp, 0x8);
-
-			cmp(eax, 0xFFFFFFFF);
-			ifZero ? jz("doJump") : jnz("doJump");
-			mov(rax, returnAddr);
-			jmp(rax);
-
-
-			L("doJump");
-			mov(rax, jumpAddr);
-			jmp(rax);
-		}
-	};
-	{
-		static cmpScenarioTypeStub stub(
-			hook::get_pattern("41 F6 46 ? ? 75 14 48 8D 4D B0"),
-			hook::get_pattern("48 8D 4D B0 E8 ? ? ? ? BA ? ? ? ? 48 8D 0D"),
-			false
-		);
-		auto location = hook::get_pattern("41 80 7E ? ? 75 22 41 F6 46");
-		hook::nop(location, 0x7);
-		hook::jump(location, stub.GetCode());
-	}
-	{
-		static cmpScenarioTypeStub stub(
-			hook::get_pattern("48 8D 4D B0 E8 ? ? ? ? BA ? ? ? ? 48 8D 0D"),
-			hook::get_pattern("48 8D 4D B0 E8 ? ? ? ? BA ? ? ? ? 66 89 45 38"),
-			true
-		);
-		auto location = hook::get_pattern("41 80 7E ? ? 74 1E");
-		hook::nop(location, 0x7);
-		hook::jump(location, stub.GetCode());
-	}
-	{
-		static cmpScenarioTypeStub stub(
-			hook::get_pattern("40 38 3D ? ? ? ? 74 05 40 8A DE"),
-			hook::get_pattern("48 8D 4D B0 E8 ? ? ? ? 48 8D 55 C0 49 8B CE"),
-			false
-		);
-		auto location = hook::get_pattern("41 80 7E ? ? 75 17 40 38 3D ? ? ? ? 74 05");
-		hook::nop(location, 0x7);
-		hook::jump(location, stub.GetCode());
+			0x0F, 0xB6, 0x4B, Offset_iTypeHi,
+			0x0F, 0xB6, 0x53, Offset_iTypeLo,
+		};
+		hook::patch_and_nop_remaining<14>(loc, patch);
 	}
 }
 
@@ -2370,181 +598,1442 @@ static void Patch54()
 {
 	spdlog::info(__func__);
 
-	static struct : jitasm::Frontend
+	// CSpawnPoint::InitFromDef
+	auto loc = hook::get_pattern<uint8_t>("66 21 4F 24 B9 ? ? ? ? 66 23 C1");
+
+	/*
+	eax = scenario type index
+	rdi = CSpawnPoint*
+
+	and     [rdi+24h], cx                              66 21 4F 24   
+	mov     ecx, 1FFh                                  B9 FF 01 00 00
+	and     ax, cx                                     66 23 C1      
+	or      [rdi+24h], ax                              66 09 47 24   
+		|
+		v
+	mov     [rdi+24h], ax                              66 89 47 24
+	*/
+	const uint8_t patch[4]
 	{
-		void InternalMain() override
-		{
-			push(r8);
-			push(r9);
-			push(rax);
-			push(rdx);
-			sub(rsp, 0x28);
-
-			mov(rcx, rbx); // param: CScenarioPoint*
-			mov(rax, (uintptr_t)GetSavedScenarioType);
-			call(rax);
-			mov(ecx, eax); // save result
-
-			add(rsp, 0x28);
-			pop(rdx);
-			pop(rax);
-			pop(r9);
-			pop(r8);
-
-			movzx(eax, word_ptr[rdx + 0x10]);
-
-			ret();
-		}
-	} getScenarioTypeStub;
-	auto location = hook::get_pattern("0F B6 4B 15 0F B7 42 10 3B C8");
-	hook::nop(location, 0x8);
-	hook::call_rcx(location, getScenarioTypeStub.GetCode());
+		0x66, 0x89, 0x47, 0x24,
+	};
+	hook::patch_and_nop_remaining<16>(loc, patch);
 }
 
 static void Patch55()
 {
 	spdlog::info(__func__);
 
-	static struct : jitasm::Frontend
+	// CCargen::Initialize
+	auto loc = hook::get_pattern<uint8_t>("66 21 43 3A 0F B7 85 ? ? ? ?");
+
+	/*
+	and     [rbx+3Ah], ax                              66 21 43 3A
+	movzx   eax, [rbp+arg_88]                          0F B7 85 A8 00 00 00
+	and     ax, cx                                     66 23 C1
+	or      [rbx+3Ah], ax                              66 09 43 3A
+		|
+		v
+	movzx   eax, [rbp+arg_88]                          0F B7 85 A8 00 00 00
+	mov     [rbx+3Ah], ax                              66 89 43 3A
+	*/
+	const uint8_t patch[11]
 	{
-		void InternalMain() override
-		{
-			push(r8);
-			push(r9);
-			push(r10);
-			push(r11);
-			push(rdx);
-			sub(rsp, 0x30);
-
-			mov(rcx, r10); // param: CScenarioPoint*
-			mov(rax, (uintptr_t)GetSavedScenarioType);
-			call(rax);
-			mov(r12d, eax); // save result
-
-			add(rsp, 0x30);
-			pop(rdx);
-			pop(r11);
-			pop(r10);
-			pop(r9);
-			pop(r8);
-
-			ret();
-		}
-	} getScenarioTypeStub;
-	auto location = hook::get_pattern("45 0F B6 62 ? 0F B7 4A 10");
-	hook::nop(location, 0x5);
-	hook::call(location, getScenarioTypeStub.GetCode());
+		0x0F, 0xB7, 0x85, 0xA8, 0x00, 0x00, 0x00,
+		0x66, 0x89, 0x43, 0x3A,
+	};
+	hook::patch_and_nop_remaining<18>(loc, patch);
 }
 
 static void Patch56()
 {
 	spdlog::info(__func__);
 
-	static struct : jitasm::Frontend
-	{
-		static bool IsVehicleInfo(CScenarioPoint* point)
-		{
-			return IsScenarioVehicleInfo(GetSavedScenarioType(point));
-		}
+	// CreateCargen
+	auto loc = hook::get_pattern<uint8_t>("81 FD ? ? ? ? 41 0F 95 C6 45 84 F6");
 
-		void InternalMain() override
-		{
-			sub(rsp, 0x8);
-
-			mov(rcx, rbx);   // param: CScenarioPoint*
-			mov(rax, (uintptr_t)IsVehicleInfo);
-			call(rax);
-
-			add(rsp, 0x8);
-
-			ret();
-		}
-	} isVehicleInfoStub;
-
-	auto location = hook::get_pattern("0F B6 4B 15 E8 ? ? ? ? 48 8D 4C 24");
-	hook::nop(location, 0x9);
-	hook::call(location, isVehicleInfoStub.GetCode());
+	/*
+	cmp     ebp, 0FFh                                  81 FD FF 00 00 00
+		|
+		v
+	cmp     ebp, InvalidScenarioType                   81 FD nn nn nn nn
+	*/
+	hook::put<uint32_t>(loc + 2, InvalidScenarioType);
 }
 
 static void Patch57()
 {
 	spdlog::info(__func__);
 
-	static struct : jitasm::Frontend
-	{
-		// TODO: verify that this patch is working
-		static uint32_t wrap(CScenarioPoint* p) { spdlog::info("Patch57:getScenarioTypeStub:{}:({}, {}, {})", (void*)p, p->vPositionAndDirection[0], p->vPositionAndDirection[1], p->vPositionAndDirection[2]); spdlog::default_logger()->flush(); return GetSavedScenarioType(p); }
-		void InternalMain() override
-		{
-			sub(rsp, 0x8);
+	// call to CreateCargen with invalid scenario type
+	auto loc = hook::get_pattern<uint8_t>("C7 84 24 ? ? ? ? ? ? ? ? 83 A4 24 ? ? ? ? ? C6 44 24 ? ?");
 
-			mov(rcx, rdi); // param: CScenarioPoint*
-			mov(rax, (uintptr_t)wrap);
-			call(rax);
-			mov(ecx, eax); // save result
-
-			add(rsp, 0x8);
-
-			mov(rdx, r15);
-
-			ret();
-		}
-	} getScenarioTypeStub;
-	auto location = hook::get_pattern("0F B6 4F 15 49 8B D7 E8");
-	hook::nop(location, 0x7);
-	hook::call(location, getScenarioTypeStub.GetCode());
+	/*
+	mov     [rsp+128h+var_A0], 0FFh                    C7 84 24 88 00 00 00 FF 00 00 00
+		|
+		v
+	mov     [rsp+128h+var_A0], InvalidScenarioType     C7 84 24 88 00 00 00 nn nn nn nn
+	*/
+	hook::put<uint32_t>(loc + 7, InvalidScenarioType);
 }
 
 static void Patch58()
 {
 	spdlog::info(__func__);
 
-	static struct : jitasm::Frontend
-	{
-		void InternalMain() override
-		{
-			sub(rsp, 0x8);
+	// call to CreateCargen with invalid scenario type
+	auto loc = hook::get_pattern<uint8_t>("C7 84 24 ? ? ? ? ? ? ? ? C1 E9 1C 89 8C 24 ? ? ? ?");
 
-			mov(rcx, rbp); // param: CScenarioPoint*
-			mov(rax, (uintptr_t)GetSavedScenarioType);
-			call(rax);
-			mov(ecx, eax); // save result
-
-			add(rsp, 0x8);
-
-			mov(r13, qword_ptr[rbx + 0x10B0]);
-
-			ret();
-		}
-	} getScenarioTypeStub;
-	auto location = hook::get_pattern("0F B6 4D 15 4C 8B AB");
-	hook::nop(location, 0xB);
-	hook::call(location, getScenarioTypeStub.GetCode());
+	/*
+	mov     [rsp+0D8h+var_50], 0FFh                    C7 84 24 88 00 00 00 FF 00 00 00
+		|
+		v
+	mov     [rsp+0D8h+var_50], InvalidScenarioType     C7 84 24 88 00 00 00 nn nn nn nn
+	*/
+	hook::put<uint32_t>(loc + 7, InvalidScenarioType);
 }
 
 static void Patch59()
 {
 	spdlog::info(__func__);
 
-	static struct : jitasm::Frontend
+	// access to CCargen::ScenarioType
+	auto loc = hook::get_pattern<uint8_t>("81 E6 ? ? ? ? 8B CE");
+
+	/*
+	and     esi, 1FFh                                  81 E6 FF 01 00 00
+		|
+		v
+	and     esi, FFFFh                                 81 E6 FF FF 00 00
+	*/
+	hook::put<uint8_t>(loc + 3, 0xFF);
+}
+
+static void Patch60()
+{
+	spdlog::info(__func__);
+
+	// access to CCargen::ScenarioType
+	auto loc = hook::get_pattern<uint8_t>("81 E7 ? ? ? ? E8 ? ? ? ? 84 C0");
+
+	/*
+	and     edi, 1FFh                                  81 E7 FF 01 00 00
+		|
+		v
+	and     edi, FFFFh                                 81 E7 FF FF 00 00
+	*/
+	hook::put<uint8_t>(loc + 3, 0xFF);
+}
+
+static void Patch61()
+{
+	spdlog::info(__func__);
+
+	// access to CCargen::ScenarioType
+	auto loc = hook::get_pattern<uint8_t>("41 81 E5 ? ? ? ? 41 8B CD 44 89 6D D7");
+
+	/*
+	and     r13d, 1FFh                                 41 81 E5 FF 01 00 00
+		|
+		v
+	and     r13d, FFFFh                                41 81 E5 FF FF 00 00
+	*/
+	hook::put<uint8_t>(loc + 4, 0xFF);
+}
+
+static void Patch62()
+{
+	spdlog::info(__func__);
+
+	// access to CCargen::ScenarioType
+	auto loc = hook::get_pattern<uint8_t>("41 81 E1 ? ? ? ? 7C 1B 4C 8B 15");
+
+	/*
+	and     r9d, 1FFh                                  41 81 E1 FF 01 00 00
+		|
+		v
+	and     r9d, FFFFh                                 41 81 E1 FF FF 00 00
+	*/
+	hook::put<uint8_t>(loc + 4, 0xFF);
+}
+
+static void Patch63()
+{
+	spdlog::info(__func__);
+
+	// access to CCargen::ScenarioType
+	hook::pattern pattern("41 B8 ? ? ? ? 0F B7 42 3A 66 41 23 C0 41 B8 ? ? ? ?");
+	pattern.count(2).for_each_result([](const hook::pattern_match& match)
 	{
-		void InternalMain() override
+		auto loc = match.get<uint8_t>();
+
+		/*
+		mov     r8d, 1FFh                              41 B8 FF 01 00 00
+		movzx   eax, word ptr [rdx+3Ah]                0F B7 42 3A
+		and     ax, r8w                                66 41 23 C0
+		mov     r8d, 0FFh                              41 B8 FF 00 00 00
+			|
+			v
+		mov     r8d, FFFFh                             41 B8 FF FF 00 00
+		movzx   eax, word ptr [rdx+3Ah]                0F B7 42 3A
+		and     ax, r8w                                66 41 23 C0
+		mov     r8d, InvalidScenarioType               41 B8 nn nn nn nn
+		*/
+		hook::put<uint8_t>(loc + 3, 0xFF);
+		hook::put<uint32_t>(loc + 14 + 2, InvalidScenarioType);
+	});
+}
+
+static void Patch64()
+{
+	spdlog::info(__func__);
+
+	// access to CCargen::ScenarioType
+	hook::pattern pattern("B9 FF 01 00 00 66 23 C1 B9 FF 00 00 00");
+	pattern.count(10).for_each_result([](const hook::pattern_match& match)
+	{
+		auto loc = match.get<uint8_t>();
+
+		/*
+		mov     ecx, 1FFh                              B9 FF 01 00 00
+		and     ax, cx                                 66 23 C1
+		mov     ecx, 0FFh                              B9 FF 00 00 00
+			|
+			v
+		mov     ecx, FFFFh                             B9 FF FF 00 00
+		and     ax, cx                                 66 23 C1
+		mov     ecx, InvalidScenarioType               B9 nn nn nn nn
+		*/
+		hook::put<uint8_t>(loc + 2, 0xFF);
+		hook::put<uint32_t>(loc + 8 + 1, InvalidScenarioType);
+	});
+}
+
+static void Patch65()
+{
+	spdlog::info(__func__);
+
+	// access to CCargen::ScenarioType
+	hook::pattern pattern("BA FF 01 00 00 0F B7 41 3A 66 23 C2 BA FF 00 00 00");
+	pattern.count(2).for_each_result([](const hook::pattern_match& match)
+	{
+		auto loc = match.get<uint8_t>();
+
+		/*
+		mov     edx, 1FFh                              BA FF 01 00 00
+		movzx   eax, word ptr [rcx+3Ah]                0F B7 41 3A
+		and     ax, dx                                 66 23 C2
+		mov     edx, 0FFh                              BA FF 00 00 00
+			|
+			v
+		mov     edx, FFFFh                             BA FF FF 00 00
+		movzx   eax, word ptr [rcx+3Ah]                0F B7 41 3A
+		and     ax, dx                                 66 23 C2
+		mov     edx, InvalidScenarioType               BA nn nn nn nn
+		*/
+		hook::put<uint8_t>(loc + 2, 0xFF);
+		hook::put<uint32_t>(loc + 12 + 1, InvalidScenarioType);
+	});
+}
+
+static void Patch66()
+{
+	spdlog::info(__func__);
+
+	// access to CCargen::ScenarioType
+	hook::pattern pattern("BA FF 01 00 00 66 23 C2 BA FF 00 00 00");
+	pattern.count(4).for_each_result([](const hook::pattern_match& match)
+	{
+		auto loc = match.get<uint8_t>();
+
+		/*
+		mov     edx, 1FFh                              BA FF 01 00 00
+		and     ax, dx                                 66 23 C2
+		mov     edx, 0FFh                              BA FF 00 00 00
+			|
+			v
+		mov     edx, FFFFh                             BA FF FF 00 00
+		and     ax, dx                                 66 23 C2
+		mov     edx, InvalidScenarioType               BA nn nn nn nn
+		*/
+		hook::put<uint8_t>(loc + 2, 0xFF);
+		hook::put<uint32_t>(loc + 8 + 1, InvalidScenarioType);
+	});
+}
+
+static void Patch67()
+{
+	spdlog::info(__func__);
+
+	// access to CCargen::ScenarioType
+	auto loc = hook::get_pattern<uint8_t>("B9 FF 01 00 00 F3 0F 10 47 ? F3 0F 10 4F ?");
+
+	/*
+	mov     ecx, 1FFh                                  B9 FF 01 00 00
+	      ... +0x86 bytes
+	and     ax, cx                                     66 23 C1
+	mov     ecx, 0FFh                                  B9 FF 00 00 00
+		|
+		v
+	mov     ecx, FFFFh                                 B9 FF FF 00 00
+	      ... +0x86 bytes
+	and     ax, cx                                     66 23 C1
+	mov     ecx, InvalidScenarioType                   B9 nn nn nn nn
+	*/
+	hook::put<uint8_t>(loc + 2, 0xFF);
+	hook::put<uint32_t>(loc + 5 + 0x86 + 3 + 1, InvalidScenarioType);
+}
+
+static void Patch68()
+{
+	spdlog::info(__func__);
+
+	// three accesses to CCargen::ScenarioType
+
+	auto loc1 = hook::get_pattern<uint8_t>("41 B9 FF 01 00 00 BA FF 00 00 00 75 6E");
+	/*
+	mov     r9d, 1FFh                                  41 B9 FF 01 00 00
+	mov     edx, 0FFh                                  BA FF 00 00 00
+		|
+		v
+	mov     r9d, FFFFh                                 41 B9 FF FF 00 00
+	mov     edx, InvalidScenarioType                   BA nn nn nn nn
+	*/
+	hook::put<uint8_t>(loc1 + 3, 0xFF);
+	hook::put<uint32_t>(loc1 + 6 + 1, InvalidScenarioType);
+
+	auto loc2 = hook::get_pattern<uint8_t>("41 BE FF 00 00 00 48 8B CF E8 ? ? ? ?");
+	/*
+	mov     r14d, 0FFh                                 41 BE FF 00 00 00
+		|
+		v
+	mov     r14d, InvalidScenarioType                  41 BE nn nn nn nn
+	*/
+	hook::put<uint32_t>(loc2 + 2, InvalidScenarioType);
+
+	auto loc3 = hook::get_pattern<uint8_t>("B9 FF 01 00 00 66 23 C1 66 41 3B C6 ");
+	/*
+	mov     ecx, 1FFh                                  B9 FF 01 00 00
+		|
+		v
+	mov     ecx, FFFFh                                 B9 FF FF 00 00
+	*/
+	hook::put<uint8_t>(loc3 + 2, 0xFF);
+}
+
+static void Patch69()
+{
+	spdlog::info(__func__);
+
+	// access to CCargen::ScenarioType
+	auto loc = hook::get_pattern<uint8_t>("81 E1 FF 01 00 00 7D 04 33 C0");
+
+	/*
+	and     ecx, 1FFh                                  81 E1 FF 01 00 00
+		|
+		v
+	and     ecx, FFFFh                                 81 E1 FF FF 00 00
+	*/
+	hook::put<uint8_t>(loc + 3, 0xFF);
+}
+
+static void Patch70()
+{
+	spdlog::info(__func__);
+
+	// two accesses to CCargen::ScenarioType
+
+	auto loc1 = hook::get_pattern<uint8_t>("B9 FF 01 00 00 4C 8B F2 41 8B DD 66 23 C1 B9 FF 00 00 00");
+	/*
+	mov     ecx, 1FFh                                  B9 FF 01 00 00
+	mov     r14, rdx                                   4C 8B F2
+	mov     ebx, r13d                                  41 8B DD
+	and     ax, cx                                     66 23 C1
+	mov     ecx, 0FFh                                  B9 FF 00 00 00
+		|
+		v
+	mov     ecx, FFFFh                                 B9 FF FF 00 00
+	mov     r14, rdx                                   4C 8B F2
+	mov     ebx, r13d                                  41 8B DD
+	and     ax, cx                                     66 23 C1
+	mov     ecx, InvalidScenarioType                   B9 nn nn nn nn
+	*/
+	hook::put<uint8_t>(loc1 + 2, 0xFF);
+	hook::put<uint32_t>(loc1 + 14 + 1, InvalidScenarioType);
+
+	auto loc2 = hook::get_pattern<uint8_t>("B8 FF 01 00 00 66 23 C8 B8 FF 00 00 00");
+	/*
+	mov     eax, 1FFh                                  B8 FF 01 00 00
+	and     cx, ax                                     66 23 C8      
+	mov     eax, 0FFh                                  B8 FF 00 00 00
+		|
+		v
+	mov     eax, FFFFh                                 B8 FF FF 00 00
+	and     cx, ax                                     66 23 C8      
+	mov     eax, InvalidScenarioType                   B8 nn nn nn nn
+	*/
+	hook::put<uint8_t>(loc2 + 2, 0xFF);
+	hook::put<uint32_t>(loc2 + 8 + 1, InvalidScenarioType);
+}
+
+static void Patch71()
+{
+	spdlog::info(__func__);
+
+	// two accesses to CCargen::ScenarioType
+
+	auto loc1 = hook::get_pattern<uint8_t>("B8 FF 01 00 00 4C 89 6D E7 66 23 C8 B8 FF 00 00 00");
+	/*
+	mov     eax, 1FFh                                  B8 FF 01 00 00
+	mov     [rbp+8Fh+var_A8], r13                      4C 89 6D E7
+	and     cx, ax                                     66 23 C8
+	mov     eax, 0FFh                                  B8 FF 00 00 00
+		|
+		v
+	mov     eax, FFFFh                                 B8 FF FF 00 00
+	mov     [rbp+8Fh+var_A8], r13                      4C 89 6D E7
+	and     cx, ax                                     66 23 C8
+	mov     eax, InvalidScenarioType                   B8 nn nn nn nn
+	*/
+	hook::put<uint8_t>(loc1 + 2, 0xFF);
+	hook::put<uint32_t>(loc1 + 12 + 1, InvalidScenarioType);
+
+	auto loc2 = hook::get_pattern<uint8_t>("BF FF 00 00 00 49 8B 46 48 F3 0F 10 00");
+	/*
+	mov     edi, 0FFh                                  BF FF 00 00 00
+		|
+		v
+	mov     edi, InvalidScenarioType                   BF nn nn nn nn
+	*/
+	hook::put<uint32_t>(loc2 + 1, InvalidScenarioType);
+
+	auto loc3 = hook::get_pattern<uint8_t>("B9 FF 01 00 00 0F B7 42 3A 66 23 C1");
+	/*
+	mov     ecx, 1FFh                                  B9 FF 01 00 00
+		|
+		v
+	mov     ecx, FFFFh                                 B9 FF FF 00 00
+	*/
+	hook::put<uint8_t>(loc3 + 2, 0xFF);
+}
+
+static void Patch72()
+{
+	spdlog::info(__func__);
+
+	// three accesses to CCargen::ScenarioType
+
+	auto loc1 = hook::get_pattern<uint8_t>("B9 FF 01 00 00 BA FF 00 00 00 74 28");
+	/*
+	mov     ecx, 1FFh                                  B9 FF 01 00 00
+	mov     edx, 0FFh                                  BA FF 00 00 00
+		|
+		v
+	mov     ecx, FFFFh                                 B9 FF FF 00 00
+	mov     edx, InvalidScenarioType                   BA nn nn nn nn
+	*/
+	hook::put<uint8_t>(loc1 + 2, 0xFF);
+	hook::put<uint32_t>(loc1 + 5 + 1, InvalidScenarioType);
+
+	auto loc2 = hook::get_pattern<uint8_t>("B9 FF 01 00 00 BA FF 00 00 00 66 23 C1");
+	/*
+	mov     ecx, 1FFh                                  B9 FF 01 00 00
+	mov     edx, 0FFh                                  BA FF 00 00 00
+		|
+		v
+	mov     ecx, FFFFh                                 B9 FF FF 00 00
+	mov     edx, InvalidScenarioType                   BA nn nn nn nn
+	*/
+	hook::put<uint8_t>(loc2 + 2, 0xFF);
+	hook::put<uint32_t>(loc2 + 5 + 1, InvalidScenarioType);
+}
+
+static void Patch73()
+{
+	spdlog::info(__func__);
+
+	// access to CScenarioPoint::iType
+	auto loc = hook::get_pattern<uint8_t>("0F B6 43 15 0F B7 4B 10 48 8B 15 ? ? ? ?");
+
+	/*
+	movzx   eax, byte ptr [rbx+15h]       0F B6 43 15
+	movzx   ecx, word ptr [rbx+10h]       0F B7 4B 10
+	mov     rdx, cs:g_ScenarioInfoMgr     48 8B 15 ?? ?? ?? ??
+	shr     ecx, 0Eh                      C1 E9 0E
+	and     ecx, 1                        83 E1 01
+	shl     ecx, 8                        C1 E1 08
+	or      ecx, eax                      0B C8
+		|
+		v
+	movzx   ecx, byte ptr [rbx+Offset_iTypeLo]         0F B6 4B offset
+	movzx   eax, byte ptr [rbx+Offset_iTypeHi]         0F B6 43 offset
+	mov     rdx, cs:g_ScenarioInfoMgr                  48 8B 15 ?? ?? ?? ??
+	shl     eax, 8                                     C1 E0 08
+	or      ecx, eax                                   09 C1
+	*/
+	const uint8_t patch1[8]
+	{
+		0x0F, 0xB6, 0x48, Offset_iTypeLo,
+		0x0F, 0xB6, 0x40, Offset_iTypeHi,
+	};
+	hook::patch_and_nop_remaining<8>(loc, patch1);
+
+	const uint8_t patch2[5]
+	{
+		0xC1, 0xE0, 0x08,
+		0x09, 0xC1,
+	};
+	hook::patch_and_nop_remaining<11>(loc + 8 + 7, patch2);
+}
+
+static void Patch74()
+{
+	spdlog::info(__func__);
+
+	// access to CScenarioPoint::iType
+	hook::pattern pattern("0F B6 ? 15 0F B7 ? 10 C1 E9 0E 83 E1 01 C1 E1 08 0B C8");
+	pattern.count(2).for_each_result([](const hook::pattern_match& match)
+	{
+		auto loc = match.get<uint8_t>();
+
+		/*
+		movzx   eax, byte ptr [rdx/rsi+15h]                0F B6 42/46 15
+		movzx   ecx, word ptr [rdx/rsi+10h]                0F B7 4A/4E 10
+		shr     ecx, 0Eh                                   C1 E9 0E
+		and     ecx, 1                                     83 E1 01
+		shl     ecx, 8                                     C1 E1 08
+		or      ecx, eax                                   0B C8
+			|
+			v
+		movzx   eax, byte ptr [rdx/rsi+Offset_iTypeLo]     0F B6 42/46 offset
+		movzx   ecx, byte ptr [rdx/rsi+Offset_iTypeHi]     0F B6 4A/4E offset
+		shl     ecx, 8                                     C1 E1 08
+		or      ecx, eax                                   0B C8
+		*/
+		const uint8_t patch[13]
 		{
-			sub(rsp, 0x8);
+			0x0F, 0xB6, *(loc + 2), Offset_iTypeLo,
+			0x0F, 0xB6, *(loc + 6), Offset_iTypeHi,
+			0xC1, 0xE1, 0x08,
+			0x0B, 0xC8,
+		};
+		hook::patch_and_nop_remaining<19>(loc, patch);
+	});
+}
 
-			mov(rcx, r15); // param: CScenarioPoint*
-			mov(rax, (uintptr_t)GetSavedScenarioType);
-			call(rax);
-			mov(r9d, eax); // save result
+static void Patch75()
+{
+	spdlog::info(__func__);
 
-			add(rsp, 0x8);
+	// access to CScenarioPoint::iType
+	hook::pattern pattern("0F B7 ? 10 0F B6 ? 15 C1 E9 0E 83 E1 01 C1 E1 08 0B C8");
+	pattern.count(4).for_each_result([](const hook::pattern_match& match)
+	{
+		auto loc = match.get<uint8_t>();
 
-			ret();
-		}
-	} getScenarioTypeStub;
-	auto location = hook::get_pattern("45 0F B6 4F ? 48 8D 0D");
-	hook::nop(location, 0x5);
-	hook::call(location, getScenarioTypeStub.GetCode());
+		/*
+		movzx   ecx, word ptr [rax/rdx/rbx+10h]                0F B7 48/4A/4B 10
+		movzx   eax, byte ptr [rax/rdx/rbx+15h]                0F B6 40/42/43 15
+		shr     ecx, 0Eh                                       C1 E9 0E
+		and     ecx, 1                                         83 E1 01
+		shl     ecx, 8                                         C1 E1 08
+		or      ecx, eax                                       0B C8
+			|
+			v
+		movzx   ecx, byte ptr [rax/rdx/rbx+Offset_iTypeLo]     0F B6 48/4A/4B offset
+		movzx   eax, byte ptr [rax/rdx/rbx+Offset_iTypeHi]     0F B6 40/42/43 offset
+		shl     eax, 8                                         C1 E0 08
+		or      ecx, eax                                       0B C8
+		*/
+		const uint8_t patch[13]
+		{
+			0x0F, 0xB6, *(loc + 2), Offset_iTypeLo,
+			0x0F, 0xB6, *(loc + 6), Offset_iTypeHi,
+			0xC1, 0xE0, 0x08,
+			0x0B, 0xC8,
+		};
+		hook::patch_and_nop_remaining<19>(loc, patch);
+	});
+}
+
+static void Patch76()
+{
+	spdlog::info(__func__);
+
+	// access to CScenarioPoint::iType
+	hook::pattern pattern("0F B6 41 15 C1 EA 0E 83 E2 01 C1 E2 08 0B D0");
+	pattern.count(2).for_each_result([](const hook::pattern_match& match)
+	{
+		auto loc = match.get<uint8_t>();
+
+		/*
+		movzx   eax, byte ptr [rcx+15h]                0F B6 41 15
+		shr     edx, 0Eh                               C1 EA 0E
+		and     edx, 1                                 83 E2 01
+		shl     edx, 8                                 C1 E2 08
+		or      edx, eax                               0B D0
+			|
+			v
+		movzx   edx, byte ptr [rcx+Offset_iTypeLo]     0F B6 51 offset
+		movzx   eax, byte ptr [rcx+Offset_iTypeHi]     0F B6 41 offset
+		shl     eax, 8                                 C1 E0 08
+		or      edx, eax                               0B D0
+		*/
+		const uint8_t patch[13]
+		{
+			0x0F, 0xB6, 0x51, Offset_iTypeLo,
+			0x0F, 0xB6, 0x41, Offset_iTypeHi,
+			0xC1, 0xE0, 0x08,
+			0x0B, 0xD0,
+		};
+		hook::patch_and_nop_remaining<15>(loc, patch);
+	});
+}
+
+static void Patch77()
+{
+	spdlog::info(__func__);
+
+	// access to CScenarioPoint::iType
+	auto loc = hook::get_pattern<uint8_t>("0F B6 47 15 0F B7 5F 10 C1 EB 0E 83 E3 01");
+
+	/*
+	movzx   eax, byte ptr [rdi+15h]                    0F B6 47 15
+	movzx   ebx, word ptr [rdi+10h]                    0F B7 5F 10
+	shr     ebx, 0Eh                                   C1 EB 0E
+	and     ebx, 1                                     83 E3 01
+	shl     ebx, 8                                     C1 E3 08
+	or      ebx, eax                                   0B D8
+		|
+		v
+	movzx   ebx, byte ptr [rdi+Offset_iTypeLo]         0F B6 5F offset
+	movzx   eax, byte ptr [rdi+Offset_iTypeHi]         0F B6 47 offset
+	shl     eax, 8                                     C1 E0 08
+	or      ebx, eax                                   0B D8
+	*/
+	const uint8_t patch[13]
+	{
+		0x0F, 0xB6, 0x5F, Offset_iTypeLo,
+		0x0F, 0xB6, 0x47, Offset_iTypeHi,
+		0xC1, 0xE0, 0x08,
+		0x0B, 0xD8,
+	};
+	hook::patch_and_nop_remaining<19>(loc, patch);
+}
+
+static void Patch78()
+{
+	spdlog::info(__func__);
+
+	// access to CScenarioPoint::iType
+	auto loc = hook::get_pattern<uint8_t>("0F B6 41 15 C1 EF 0E 83 E7 01");
+
+	/*
+	movzx   eax, byte ptr [rcx+15h]      0F B6 41 15
+	shr     edi, 0Eh                     C1 EF 0E
+	and     edi, 1                       83 E7 01
+	shl     edi, 8                       C1 E7 08
+	or      edi, eax                     0B F8
+		|
+		v
+	movzx   edi, byte ptr [rcx+Offset_iTypeLo]         0F B6 79 offset
+	movzx   eax, byte ptr [rcx+Offset_iTypeHi]         0F B6 41 offset
+	shl     eax, 8                                     C1 E0 08
+	or      edi, eax                                   0B F8
+	*/
+	const uint8_t patch[13]
+	{
+		0x0F, 0xB6, 0x79, Offset_iTypeLo,
+		0x0F, 0xB6, 0x41, Offset_iTypeHi,
+		0xC1, 0xE0, 0x08,
+		0x0B, 0xF8,
+	};
+	hook::patch_and_nop_remaining<15>(loc, patch);
+}
+
+static void Patch79()
+{
+	spdlog::info(__func__);
+
+	// access to CScenarioPoint::iType
+	auto loc = hook::get_pattern<uint8_t>("0F B6 41 15 44 0F B7 41 10 4C 8B 0D ? ? ? ? 41 C1 E8 0E");
+
+	/*
+	movzx   eax, byte ptr [rcx+15h]                    0F B6 41 15
+	movzx   r8d, word ptr [rcx+10h]                    44 0F B7 41 10
+	mov     r9, cs:g_ScenarioInfoMgr                   4C 8B 0D ?? ?? ?? ??
+	shr     r8d, 0Eh                                   41 C1 E8 0E
+	and     r8d, 1                                     41 83 E0 01
+	shl     r8d, 8                                     41 C1 E0 08
+	or      r8d, eax                                   44 0B C0
+		|
+		v
+	movzx   r8d, byte ptr [rcx+Offset_iTypeLo]         44 0F B6 41 offset
+	movzx   eax, byte ptr [rcx+Offset_iTypeHi]         0F B6 41 offset
+	mov     r9, cs:g_ScenarioInfoMgr                   4C 8B 0D ?? ?? ?? ??
+	shl     eax, 8                                     C1 E0 08
+	or      r8d, eax                                   44 0B C0
+	*/
+	const uint8_t patch1[9]
+	{
+		0x44, 0x0F, 0xB6, 0x41, Offset_iTypeLo,
+		0x0F, 0xB6, 0x41, Offset_iTypeHi,
+	};
+	hook::patch_and_nop_remaining<9>(loc, patch1);
+
+	const uint8_t patch2[6]
+	{
+		0xC1, 0xE0, 0x08,
+		0x44, 0x0B, 0xC0,
+	};
+	hook::patch_and_nop_remaining<15>(loc + 9 + 7, patch2);
+}
+
+static void Patch80()
+{
+	spdlog::info(__func__);
+
+	// access to CScenarioPoint::iType, CScenarioPoint::GetScenarioTypeIndex
+	auto loc = hook::get_pattern<uint8_t>("0F B6 41 15 44 0F B7 41 10 41 C1 E8 0E");
+
+	/*
+	movzx   eax, byte ptr [rcx+15h]        0F B6 41 15
+	movzx   r8d, word ptr [rcx+10h]        44 0F B7 41 10
+	shr     r8d, 0Eh                       41 C1 E8 0E
+	and     r8d, 1                         41 83 E0 01
+	shl     r8d, 8                         41 C1 E0 08
+	or      r8d, eax                       44 0B C0
+		|
+		v
+	movzx   r8d, byte ptr [rcx+Offset_iTypeLo]         44 0F B6 41 offset
+	movzx   eax, byte ptr [rcx+Offset_iTypeHi]         0F B6 41 offset
+	shl     eax, 8                                     C1 E0 08
+	or      r8d, eax                                   44 0B C0
+	*/
+	const uint8_t patch[15]
+	{
+		0x44, 0x0F, 0xB6, 0x41, Offset_iTypeLo,
+		0x0F, 0xB6, 0x41, Offset_iTypeHi,
+		0xC1, 0xE0, 0x08,
+		0x44, 0x0B, 0xC0,
+	};
+	hook::patch_and_nop_remaining<24>(loc, patch);
+}
+
+static void Patch81()
+{
+	spdlog::info(__func__);
+
+	// access to CScenarioPoint::iType
+	auto loc = hook::get_pattern<uint8_t>("41 0F B6 46 15 41 C1 E9 0E 41 83 E1 01");
+
+	/*
+	movzx   eax, byte ptr [r14+15h]                    41 0F B6 46 15
+	shr     r9d, 0Eh                                   41 C1 E9 0E
+	and     r9d, 1                                     41 83 E1 01
+	shl     r9d, 8                                     41 C1 E1 08
+	or      r9d, eax                                   44 0B C8
+		|
+		v
+	movzx   r9d, byte ptr [r14+Offset_iTypeLo]         45 0F B6 4E offset
+	movzx   eax, byte ptr [r14+Offset_iTypeHi]         41 0F B6 46 offset
+	shl     eax, 8                                     C1 E0 08
+	or      r9d, eax                                   44 0B C8
+	*/
+	const uint8_t patch[16]
+	{
+		0x45, 0x0F, 0xB6, 0x4E, Offset_iTypeLo,
+		0x41, 0x0F, 0xB6, 0x46, Offset_iTypeHi,
+		0xC1, 0xE0, 0x08,
+		0x44, 0x0B, 0xC8,
+	};
+	hook::patch_and_nop_remaining<20>(loc, patch);
+}
+
+static void Patch82()
+{
+	spdlog::info(__func__);
+
+	// access to CScenarioPoint::iType
+	auto loc = hook::get_pattern<uint8_t>("0F B6 45 95 44 8B 65 90 41 C1 EC 0E");
+
+	/*
+	movzx   eax, [rbp+0A8h+a1.iType]                              0F B6 45 95
+	mov     r12d, dword ptr [rbp+0A8h+a1.RuntimeFlags]            44 8B 65 90
+	shr     r12d, 0Eh                                             41 C1 EC 0E
+	and     r12d, 1                                               41 83 E4 01
+	shl     r12d, 8                                               41 C1 E4 08
+	or      r12d, eax                                             44 0B E0
+		|
+		v
+	movzx   r12d, byte ptr [r14+0A8h-128h+Offset_iTypeLo]         44 0F B6 65 80h+offset
+	movzx   eax, byte ptr [r14+0A8h-128h+Offset_iTypeHi]          0F B6 45 80h+offset
+	shl     eax, 8                                                C1 E0 08
+	or      r12d, eax                                             44 0B E0
+	*/
+	const uint8_t patch[15]
+	{
+		0x44, 0x0F, 0xB6, 0x65, 0x80 + Offset_iTypeLo,
+		0x0F, 0xB6, 0x45, 0x80 + Offset_iTypeHi,
+		0xC1, 0xE0, 0x08,
+		0x44, 0x0B, 0xE0,
+	};
+	hook::patch_and_nop_remaining<23>(loc, patch);
+}
+
+static void Patch83()
+{
+	spdlog::info(__func__);
+
+	// access to CScenarioPoint::iType
+	auto loc = hook::get_pattern<uint8_t>("0F B6 47 15 0F B7 4A 10 41 C1 EE 0E");
+
+	/*
+	movzx   eax, byte ptr [rdi+15h]                    0F B6 47 15
+	movzx   ecx, word ptr [rdx+10h]                    0F B7 4A 10
+	shr     r14d, 0Eh                                  41 C1 EE 0E
+	and     r14d, 1                                    41 83 E6 01
+	shl     r14d, 8                                    41 C1 E6 08
+	or      r14d, eax                                  44 0B F0
+		|
+		v
+	movzx   ecx, word ptr [rdx+10h]                    0F B7 4A 10
+	movzx   r14d, byte ptr [rdi+Offset_iTypeLo]        44 0F B6 77 offset
+	movzx   eax, byte ptr [rdi+Offset_iTypeHi]         0F B6 47 offset
+	shl     eax, 8                                     C1 E0 08
+	or      r14d, eax                                  44 0B F0
+	*/
+	const uint8_t patch[19]
+	{
+		0x0F, 0xB7, 0x4A, 0x10,
+		0x44, 0x0F, 0xB6, 0x77, Offset_iTypeLo,
+		0x0F, 0xB6, 0x47, Offset_iTypeHi,
+		0xC1, 0xE0, 0x08,
+		0x44, 0x0B, 0xF0,
+	};
+	hook::patch_and_nop_remaining<23>(loc, patch);
+}
+
+static void Patch84()
+{
+	spdlog::info(__func__);
+
+	// access to CScenarioPoint::iType
+	auto loc = hook::get_pattern<uint8_t>("0F B6 45 FC 44 8B 7D F7 41 C1 EF 0E");
+
+	/*
+	movzx   eax, [rbp+57h+a1.iType]                               0F B6 45 FC
+	mov     r15d, dword ptr [rbp+57h+a1.RuntimeFlags]             44 8B 7D F7
+	shr     r15d, 0Eh                                             41 C1 EF 0E
+	and     r15d, 1                                               41 83 E7 01
+	shl     r15d, 8                                               41 C1 E7 08
+	or      r15d, eax                                             44 0B F8
+		|
+		v
+	movzx   r15d, byte ptr [rbp+57h-70h+Offset_iTypeLo]           44 0F B6 7D E7h+offset
+	movzx   eax, byte ptr [rbp+57h-70h+Offset_iTypeHi]            0F B6 45 E7h+offset
+	shl     eax, 8                                                C1 E0 08
+	or      r15d, eax                                             44 0B F8
+	*/
+	const uint8_t patch[15]
+	{
+		0x44, 0x0F, 0xB6, 0x7D, 0xE7 + Offset_iTypeLo,
+		0x0F, 0xB6, 0x45, static_cast<uint8_t>(0xE7 + Offset_iTypeHi),
+		0xC1, 0xE0, 0x08,
+		0x44, 0x0B, 0xF8,
+	};
+	hook::patch_and_nop_remaining<23>(loc, patch);
+}
+
+static void Patch85()
+{
+	spdlog::info(__func__);
+
+	// access to CScenarioPoint::iType
+	auto loc = hook::get_pattern<uint8_t>("0F B6 43 15 0F B7 7B 10 C1 EF 0E");
+
+	/*
+	movzx   eax, byte ptr [rbx+15h]                    0F B6 43 15
+	movzx   edi, word ptr [rbx+10h]                    0F B7 7B 10
+	shr     edi, 0Eh                                   C1 EF 0E
+	and     edi, esi                                   23 FE
+	shl     edi, 8                                     C1 E7 08
+	or      edi, eax                                   0B F8
+		|
+		v
+	movzx   edi, byte ptr [rbx+Offset_iTypeLo]         0F B6 7B offset
+	movzx   eax, byte ptr [rbx+Offset_iTypeHi]         0F B6 43 offset
+	shl     eax, 8                                     C1 E0 08
+	or      edi, eax                                   0B F8
+	*/
+	const uint8_t patch[13]
+	{
+		0x0F, 0xB6, 0x7B, Offset_iTypeLo,
+		0x0F, 0xB6, 0x43, Offset_iTypeHi,
+		0xC1, 0xE0, 0x08,
+		0x0B, 0xF8,
+	};
+	hook::patch_and_nop_remaining<18>(loc, patch);
+}
+
+static void Patch86()
+{
+	spdlog::info(__func__);
+
+	// access to CScenarioPoint::iType
+	auto loc = hook::get_pattern<uint8_t>("44 0F B7 41 ? 0F B6 41 15 40 8A EA");
+
+	/*
+	movzx   r8d, word ptr [rcx+10h]                    44 0F B7 41 10
+	movzx   eax, byte ptr [rcx+15h]                    0F B6 41 15
+	mov     bpl, dl                                    40 8A EA
+	shr     r8d, 0Eh                                   41 C1 E8 0E
+	mov     rbx, rcx                                   48 8B D9
+	and     r8d, 1                                     41 83 E0 01
+	shl     r8d, 8                                     41 C1 E0 08
+	or      r8d, eax                                   44 0B C0
+		|
+		v
+	movzx   r8d, byte ptr [rcx+Offset_iTypeLo]         44 0F B6 41 offset
+	movzx   eax, byte ptr [rcx+Offset_iTypeHi]         0F B6 41 offset
+	shl     eax, 8                                     C1 E0 08
+	or      r8d, eax                                   44 0B C0
+	mov     bpl, dl                                    40 8A EA
+	mov     rbx, rcx                                   48 8B D9
+	*/
+	const uint8_t patch[21]
+	{
+		0x44, 0x0F, 0xB6, 0x41, Offset_iTypeLo,
+		0x0F, 0xB6, 0x41, Offset_iTypeHi,
+		0xC1, 0xE0, 0x08,
+		0x44, 0x0B, 0xC0,
+		0x40, 0x8A, 0xEA,
+		0x48, 0x8B, 0xD9,
+	};
+	hook::patch_and_nop_remaining<30>(loc, patch);
+}
+
+static void Patch87()
+{
+	spdlog::info(__func__);
+
+	// access to CScenarioPoint::iType
+	auto loc = hook::get_pattern<uint8_t>("45 0F B7 4F ? 41 0F B6 47 ? 41 C1 E9 0E");
+
+	/*
+	movzx   r9d, word ptr [r15+10h]                    45 0F B7 4F 10
+	movzx   eax, byte ptr [r15+15h]                    41 0F B6 47 15
+	shr     r9d, 0Eh                                   41 C1 E9 0E
+		|
+		v
+	movzx   r9d, byte ptr [r15+Offset_iTypeLo]         45 0F B6 4F offset
+	movzx   eax, byte ptr [r15+Offset_iTypeHi]         41 0F B6 47 offset
+	shl     eax, 8                                     C1 E0 08
+		...
+	or      r9d, eax  ; this instruction is already in the original code
+	*/
+	const uint8_t patch[13]
+	{
+		0x45, 0x0F, 0xB6, 0x4F, Offset_iTypeLo,
+		0x41, 0x0F, 0xB6, 0x47, Offset_iTypeHi,
+		0xC1, 0xE0, 0x08,
+	};
+	hook::patch_and_nop_remaining<14>(loc, patch);
+
+	/*
+	and     r9d, esi                          44 23 CE
+	*/
+	hook::nop(loc + 0x1A, 3);
+
+
+	/*
+	shl     r9d, 8                            41 C1 E1 08
+	*/
+	hook::nop(loc + 0x23, 4);
+}
+
+static void Patch88()
+{
+	spdlog::info(__func__);
+
+	// access to CScenarioPoint::iType
+	auto loc = hook::get_pattern<uint8_t>("0F B6 40 15 41 C1 E9 0E 48 8D 0D ? ? ? ?");
+
+	/*
+	movzx   eax, byte ptr [rax+15h]         0F B6 40 15
+	shr     r9d, 0Eh                        41 C1 E9 0E
+	lea     rcx, unk_2607510                48 8D 0D 4C 81 9A 01
+	and     r9d, 1                          41 83 E1 01
+	mov     rdx, rdi                        48 8B D7
+	mov     [rsp+38h+var_18], rbx           48 89 5C 24 20
+	shl     r9d, 8                          41 C1 E1 08
+	or      r9d, eax                        44 0B C8
+		|
+		v
+	movzx   r9d, byte ptr [rax+Offset_iTypeHi]         44 0F B6 48 offset
+	nop                                                90
+	nop                                                90
+	nop                                                90
+	lea     rcx, unk_2607510                           48 8D 0D 4C 81 9A 01
+	movzx   eax, byte ptr [rcx+Offset_iTypeLo]         0F B6 41 offset
+	mov     rdx, rdi                                   48 8B D7
+	mov     [rsp+38h+var_18], rbx                      48 89 5C 24 20
+	shl     r9d, 8                                     41 C1 E1 08
+	or      r9d, eax                                   44 0B C8
+	*/
+	const uint8_t patch1[5]
+	{
+		0x44, 0x0F, 0xB6, 0x48, Offset_iTypeHi,
+	};
+	hook::patch_and_nop_remaining<8>(loc, patch1);
+
+	const uint8_t patch2[4]
+	{
+		0x0F, 0xB6, 0x41, Offset_iTypeLo,
+	};
+	hook::patch_and_nop_remaining<4>(loc + 8 + 7, patch2);
+}
+
+static void Patch89()
+{
+	spdlog::info(__func__);
+
+	// access to CScenarioPoint::iType
+	auto loc = hook::get_pattern<uint8_t>("0F B7 4D 10 0F B6 45 15 4C 8B AB ? ? ? ?");
+
+	/*
+	movzx   ecx, word ptr [rbp+10h]                    0F B7 4D 10
+	movzx   eax, byte ptr [rbp+15h]                    0F B6 45 15
+	mov     r13, [rbx+10B0h]                           4C 8B AB B0 10 00 00
+	shr     ecx, 0Eh                                   C1 E9 0E
+	mov     rdx, rbx                                   48 8B D3
+	and     ecx, 1                                     83 E1 01
+	shl     ecx, 8                                     C1 E1 08
+	or      ecx, eax                                   0B C8
+		|
+		v
+	movzx   ecx, byte ptr [rbp+Offset_iTypeHi]         0F B6 4D offset
+	movzx   eax, byte ptr [rbp+Offset_iTypeLo]         0F B6 45 offset
+	mov     r13, [rbx+10B0h]                           4C 8B AB B0 10 00 00
+	nop                                                90
+	nop                                                90
+	nop                                                90
+	mov     rdx, rbx                                   48 8B D3
+	nop                                                90
+	nop                                                90
+	nop                                                90
+	shl     ecx, 8                                     C1 E1 08
+	or      ecx, eax                                   0B C8
+	*/
+	const uint8_t patch[8]
+	{
+		0x0F, 0xB6, 0x4D, Offset_iTypeHi,
+		0x0F, 0xB6, 0x45, Offset_iTypeLo,
+	};
+	hook::patch_and_nop_remaining<8>(loc, patch);
+
+	hook::nop(loc + 8 + 7, 3);
+
+	hook::nop(loc + 8 + 7 + 3 + 3, 3);
+}
+
+static void Patch90()
+{
+	spdlog::info(__func__);
+
+	// access to CScenarioPoint::ModelSetId
+	auto loc = hook::get_pattern<uint8_t>("41 0F B6 46 16 3D FF 00 00 00 74 1B");
+
+	/*
+	movzx   eax, byte ptr [r14+16h]                    41 0F B6 46 16
+	cmp     eax, 0FFh                                  3D FF 00 00 00
+		|
+		v
+	movzx   eax, word ptr [r14+Offset_ModelSetId]      41 0F B7 46 offset
+	cmp     eax, InvalidModelSetId                     3D nn nn nn nn
+	*/
+	hook::put<uint8_t>(loc + 2, 0xB7);
+	hook::put<uint8_t>(loc + 4, Offset_ModelSetId);
+	hook::put<uint32_t>(loc + 5 + 1, InvalidModelSetId);
+}
+
+static void Patch91()
+{
+	spdlog::info(__func__);
+
+	// access to CCargen::ScenarioType
+	auto loc = hook::get_pattern<uint8_t>("41 B9 FF 01 00 00 41 B8 FF 00 00 00");
+
+	/*
+	mov     r9d, 1FFh                                  41 B9 FF 01 00 00
+	mov     r8d, 0FFh                                  41 B8 FF 00 00 00
+		|
+		v
+	mov     r9d, FFFFh                                 41 B9 FF FF 00 00
+	mov     r8d, InvalidScenarioType                   41 B8 nn nn nn nn
+	*/
+	hook::put<uint8_t>(loc + 3, 0xFF);
+	hook::put<uint32_t>(loc + 6 + 2, InvalidScenarioType);
+}
+
+static void Patch92()
+{
+	spdlog::info(__func__);
+
+	// access to CCargen::ScenarioType
+	auto loc = hook::get_pattern<uint8_t>("BA FF 01 00 00 66 23 CA BA FF 00 00 00");
+
+	/*
+	mov     edx, 1FFh                                  BA FF 01 00 00
+	and     cx, dx                                     66 23 CA
+	mov     edx, 0FFh                                  BA FF 00 00 00
+		|
+		v
+	mov     edx, FFFFh                                  BA FF FF 00 00
+	and     cx, dx                                      66 23 CA
+	mov     edx, InvalidScenarioType                    BA nn nn nn nn
+	*/
+	hook::put<uint8_t>(loc + 2, 0xFF);
+	hook::put<uint32_t>(loc + 5 + 3 + 1, InvalidScenarioType);
+}
+
+static void Patch93()
+{
+	spdlog::info(__func__);
+
+	// access to CCargen::ScenarioType
+	auto loc = hook::get_pattern<uint8_t>("B9 FF 01 00 00 41 BE FF 00 00 00");
+
+	/*
+	mov     ecx, 1FFh                                   B9 FF 01 00 00
+	mov     r14d, 0FFh                                  41 BE FF 00 00 00
+		|
+		v
+	mov     ecx, FFFFh                                  B9 FF FF 00 00
+	mov     r14d, InvalidScenarioType                   41 BE nn nn nn nn
+	*/
+	hook::put<uint8_t>(loc + 2, 0xFF);
+	hook::put<uint32_t>(loc + 5 + 2, InvalidScenarioType);
+}
+
+static void Patch94()
+{
+	spdlog::info(__func__);
+
+	// access to CScenarioPoint::iType
+	auto loc = hook::get_pattern<uint8_t>("0F B7 4F 10 0F B6 47 15 49 8B D7");
+
+	/*
+	movzx   ecx, word ptr [rdi+10h]    0F B7 4F 10
+	movzx   eax, byte ptr [rdi+15h]    0F B6 47 15
+	mov     rdx, r15                   49 8B D7
+	shr     ecx, 0Eh                   C1 E9 0E
+	and     ecx, 1                     83 E1 01
+	shl     ecx, 8                     C1 E1 08
+	or      ecx, eax                   0B C8
+		|
+		v
+	movzx   ecx, byte ptr [rdi+Offset_iTypeLo]         0F B6 4F offset
+	movzx   eax, byte ptr [rdi+Offset_iTypeHi]         0F B6 47 offset
+	shl     eax, 8                                     C1 E0 08
+	or      ecx, eax                                   0B C8
+	mov     rdx, r15                                   49 8B D7
+	*/
+	const uint8_t patch[16]
+	{
+		0x0F, 0xB6, 0x4F, Offset_iTypeLo,
+		0x0F, 0xB6, 0x47, Offset_iTypeHi,
+		0xC1, 0xE0, 0x08,
+		0x0B, 0xC8,
+		0x49, 0x8B, 0xD7,
+	};
+	hook::patch_and_nop_remaining<22>(loc, patch);
+}
+
+static void Patch95()
+{
+	spdlog::info(__func__);
+
+	// access to CScenarioPoint::iType
+	auto loc = hook::get_pattern<uint8_t>("41 0F B7 5A 10 41 0F B6 42 15 0F B7 4A 10");
+
+	/*
+	movzx   ebx, word ptr [r10+10h]     41 0F B7 5A 10
+	movzx   eax, byte ptr [r10+15h]     41 0F B6 42 15
+	movzx   ecx, word ptr [rdx+10h]     0F B7 4A 10
+	shr     ebx, 0Eh                    C1 EB 0E
+	mov     [rbp+180h+var_200], r10     4C 89 55 80
+	and     ebx, 1                      83 E3 01
+	shl     ebx, 8                      C1 E3 08
+	or      ebx, eax                    0B D8
+		|
+		v
+	movzx   ebx, byte ptr [r10+Offset_iTypeHi]     41 0F B6 5A offset
+	movzx   eax, byte ptr [r10+Offset_iTypeLo]     41 0F B6 42 offset
+	movzx   ecx, word ptr [rdx+10h]                0F B7 4A 10
+	nop                                            90
+	nop                                            90
+	nop                                            90
+	mov     [rbp+180h+var_200], r10                4C 89 55 80
+	nop                                            90
+	nop                                            90
+	nop                                            90
+	shl     ebx, 8                                 C1 E3 08
+	or      ebx, eax                               0B D8
+	*/
+	const uint8_t patch[10]
+	{
+		0x41, 0x0F, 0xB6, 0x5A, Offset_iTypeHi,
+		0x41, 0x0F, 0xB6, 0x42, Offset_iTypeLo,
+	};
+	hook::patch_and_nop_remaining<10>(loc, patch);
+
+	hook::nop(loc + 10 + 4, 3);
+
+	hook::nop(loc + 10 + 4 + 3 + 4, 3);
+}
+
+static void Patch96()
+{
+	spdlog::info(__func__);
+
+	// access to CScenarioPoint::iType
+	auto loc = hook::get_pattern<uint8_t>("0F B6 43 15 0F B7 4B 10 48 8B 15 ? ? ? ?");
+
+	/*
+	movzx   eax, byte ptr [rbx+15h]            0F B6 43 15
+	movzx   ecx, word ptr [rbx+10h]            0F B7 4B 10
+	mov     rdx, cs:g_ScenarioInfoMgr          48 8B 15 4C 85 88 01
+	shr     ecx, 0Eh                           C1 E9 0E
+	and     ecx, 1                             83 E1 01
+	shl     ecx, 8                             C1 E1 08
+	or      ecx, eax                           0B C8
+		|
+		v
+	movzx   eax, byte ptr [rbx+Offset_iTypeLo]         0F B6 43 offset
+	movzx   ecx, byte ptr [rbx+Offset_iTypeHi]         0F B7 4B offset
+	mov     rdx, cs:g_ScenarioInfoMgr                  48 8B 15 4C 85 88 01
+	nop                                                90
+	nop                                                90
+	nop                                                90
+	nop                                                90
+	nop                                                90
+	nop                                                90
+	shl     ecx, 8                                     C1 E1 08
+	or      ecx, eax                                   0B C8
+	*/
+	const uint8_t patch[8]
+	{
+		0x0F, 0xB6, 0x43, Offset_iTypeLo,
+		0x0F, 0xB6, 0x4B, Offset_iTypeHi,
+	};
+	hook::patch_and_nop_remaining<8>(loc, patch);
+
+	hook::nop(loc + 8 + 7, 6);
+}
+
+static void Patch97()
+{
+	spdlog::info(__func__);
+
+	// access to CScenarioPoint::iType
+	auto loc = hook::get_pattern<uint8_t>("45 0F B7 6F 10 41 0F B6 47 15 4C 8D 4C 24 ?");
+
+	/*
+	movzx   r13d, word ptr [r15+10h]                   45 0F B7 6F 10
+	movzx   eax, byte ptr [r15+15h]                    41 0F B6 47 15
+	lea     r9, [rsp+108h+var_C8]                      4C 8D 4C 24 40
+	shr     r13d, 0Eh                                  41 C1 ED 0E
+	lea     r8, [rsp+108h+arg_8]                       4C 8D 84 24 18 01 00 00
+	mov     [rsp+108h+arg_8], r14d                     44 89 B4 24 18 01 00 00
+	and     r13d, 1                                    41 83 E5 01
+	mov     [rsp+108h+var_E8], 10h                     C7 44 24 20 10 00 00 00
+	shl     r13d, 8                                    41 C1 E5 08
+	or      r13d, eax                                  44 0B E8
+		|
+		v
+	movzx   r13d, byte ptr [r15+Offset_iTypeHi]        45 0F B6 6F offset
+	movzx   eax, byte ptr [r15+Offset_iTypeLo]         41 0F B6 47 offset
+	lea     r9, [rsp+108h+var_C8]                      4C 8D 4C 24 40
+	nop                                                90
+	nop                                                90
+	nop                                                90
+	nop                                                90
+	lea     r8, [rsp+108h+arg_8]                       4C 8D 84 24 18 01 00 00
+	mov     [rsp+108h+arg_8], r14d                     44 89 B4 24 18 01 00 00
+	nop                                                90
+	nop                                                90
+	nop                                                90
+	nop                                                90
+	mov     [rsp+108h+var_E8], 10h                     C7 44 24 20 10 00 00 00
+	shl     r13d, 8                                    41 C1 E5 08
+	or      r13d, eax                                  44 0B E8
+	*/
+	const uint8_t patch[10]
+	{
+		0x45, 0x0F, 0xB6, 0x6F, Offset_iTypeHi,
+		0x41, 0x0F, 0xB6, 0x47, Offset_iTypeLo,
+	};
+	hook::patch_and_nop_remaining<10>(loc, patch);
+
+	hook::nop(loc + 10 + 5, 4);
+
+	hook::nop(loc + 10 + 5 + 4 + 8 + 8, 4);
+}
+
+static void Patch98()
+{
+	spdlog::info(__func__);
+
+	// access to CScenarioPoint::iType
+	auto loc = hook::get_pattern<uint8_t>("44 0F B7 4E 10 0F 28 44 24 ? 0F B6 46 15");
+
+	/*
+	movzx   r9d, word ptr [rsi+10h]       44 0F B7 4E 10
+	movaps  xmm0, [rsp+38h+var_18]        0F 28 44 24 20
+	movzx   eax, byte ptr [rsi+15h]       0F B6 46 15
+	shr     r9d, 0Eh                      41 C1 E9 0E
+	lea     r8, [rsp+38h+arg_0]           4C 8D 44 24 40
+	movaps  [rsp+38h+var_18], xmm0        0F 29 44 24 20
+	and     r9d, 1                        41 83 E1 01
+	lea     rdx, [rsp+38h+var_18]         48 8D 54 24 20
+	mov     rcx, rbx                      48 8B CB
+	shl     r9d, 8                        41 C1 E1 08
+	or      r9d, eax                      44 0B C8
+		|
+		v
+	movzx   r9d, byte ptr [rsi+Offset_iTypeHi]         44 0F B6 4E offset
+	movaps  xmm0, [rsp+38h+var_18]                     0F 28 44 24 20
+	movzx   eax, byte ptr [rsi+Offset_iTypeLo]         0F B6 46 offset
+	nop                                                90
+	nop                                                90
+	nop                                                90
+	nop                                                90
+	lea     r8, [rsp+38h+arg_0]                        4C 8D 44 24 40
+	movaps  [rsp+38h+var_18], xmm0                     0F 29 44 24 20
+	nop                                                90
+	nop                                                90
+	nop                                                90
+	nop                                                90
+	lea     rdx, [rsp+38h+var_18]                      48 8D 54 24 20
+	mov     rcx, rbx                                   48 8B CB
+	shl     r9d, 8                                     41 C1 E1 08
+	or      r9d, eax                                   44 0B C8
+	*/
+	const uint8_t patch1[5]
+	{
+		0x44, 0x0F, 0xB6, 0x4E, Offset_iTypeHi,
+	};
+	hook::patch_and_nop_remaining<5>(loc, patch1);
+
+	const uint8_t patch2[4]
+	{
+		0x0F, 0xB6, 0x46, Offset_iTypeLo,
+	};
+	hook::patch_and_nop_remaining<8>(loc + 5 + 5, patch2);
+
+	hook::nop(loc + 5 + 5 + 8 + 5 + 5, 4);
+}
+
+static void Patch99()
+{
+	spdlog::info(__func__);
+
+	// access to CScenarioPoint::iType
+	auto loc = hook::get_pattern<uint8_t>("0F B7 4C 17 10 0F B6 44 17 15");
+
+	/*
+	movzx   ecx, word ptr [rdi+rdx+10h]                0F B7 4C 17 10
+	movzx   eax, byte ptr [rdi+rdx+15h]                0F B6 44 17 15
+	shr     ecx, 0Eh                                   C1 E9 0E
+	and     ecx, r8d                                   41 23 C8
+	shl     ecx, 8                                     C1 E1 08
+	or      ecx, eax                                   0B C8
+		|
+		v
+	movzx   ecx, byte ptr [rdi+rdx+Offset_iTypeHi]     0F B6 4C 17 offset
+	movzx   eax, byte ptr [rdi+rdx+Offset_iTypeLo]     0F B6 44 17 offset
+	nop                                                90
+	nop                                                90
+	nop                                                90
+	nop                                                90
+	nop                                                90
+	nop                                                90
+	shl     ecx, 8                                     C1 E1 08
+	or      ecx, eax                                   0B C8
+	*/
+	const uint8_t patch[10]
+	{
+		0x0F, 0xB6, 0x4C, 0x17, Offset_iTypeHi,
+		0x0F, 0xB6, 0x44, 0x17, Offset_iTypeLo,
+	};
+	hook::patch_and_nop_remaining<16>(loc, patch);
+}
+
+static void Patch100()
+{
+	spdlog::info(__func__);
+
+	// access to CScenarioPoint::iType
+	auto loc = hook::get_pattern<uint8_t>("0F B6 41 15 44 8A DA 0F B7 51 10");
+
+	/*
+	movzx   eax, byte ptr [rcx+15h]     0F B6 41 15
+	mov     r11b, dl                    44 8A DA
+	movzx   edx, word ptr [rcx+10h]     0F B7 51 10
+	shr     edx, 0Eh                    C1 EA 0E
+	mov     r10, rcx                    4C 8B D1
+	and     edx, 1                      83 E2 01
+	shl     edx, 8                      C1 E2 08
+	or      edx, eax                    0B D0
+		|
+		v
+	movzx   eax, byte ptr [rcx+Offset_iTypeLo]         0F B6 41 offset
+	mov     r11b, dl                                   44 8A DA
+	movzx   edx, byte ptr [rcx+Offset_iTypeHi]         0F B6 51 offset
+	nop                                                90
+	nop                                                90
+	nop                                                90
+	mov     r10, rcx                                   4C 8B D1
+	nop                                                90
+	nop                                                90
+	nop                                                90
+	shl     edx, 8                                     C1 E2 08
+	or      edx, eax                                   0B D0
+	*/
+	const uint8_t patch1[4]
+	{
+		0x0F, 0xB6, 0x41, Offset_iTypeLo,
+	};
+	hook::patch_and_nop_remaining<4>(loc, patch1);
+
+	const uint8_t patch2[4]
+	{
+		0x0F, 0xB6, 0x51, Offset_iTypeHi,
+	};
+	hook::patch_and_nop_remaining<7>(loc + 4 + 3, patch2);
+
+	hook::nop(loc + 4 + 3 + 7 + 3, 3);
+}
+
+static void Patch101()
+{
+	spdlog::info(__func__);
+
+	// access to CScenarioPoint::ModelSetId
+	auto loc = hook::get_pattern<uint8_t>("0F B6 43 16 3D FF 00 00 00");
+
+	/*
+	movzx   eax, byte ptr [rbx+16h]                    0F B6 43 16
+	cmp     eax, 0FFh                                  3D FF 00 00 00
+		|
+		v
+	movzx   eax, word ptr [rbx+Offset_ModelSetId]      0F B7 43 offset
+	cmp     eax, InvalidModelSetId                     3D nn nn nn nn
+	*/
+	hook::put<uint8_t>(loc + 1, 0xB7);
+	hook::put<uint8_t>(loc + 3, Offset_ModelSetId);
+	hook::put<uint32_t>(loc + 4 + 1, InvalidModelSetId);
 }
 
 static DWORD WINAPI Main()
@@ -2559,9 +2048,13 @@ static DWORD WINAPI Main()
 		spdlog::set_level(spdlog::level::off);
 	}
 
-	spdlog::info("Initializing MinHook...");
-	MH_Initialize();
+
+	spdlog::info("Initializing...");
+
+	const auto startTime = std::chrono::steady_clock::now();
 	
+	MH_Initialize();
+
 	FindGameFunctions();
 	FindGameVariables();
 
@@ -2570,49 +2063,11 @@ static DWORD WINAPI Main()
 	Patch3();
 	Patch4();
 	Patch5();
-	Patch6();
 	Patch7();
 	Patch8();
-	Patch9();
-	Patch10();
-	Patch11();
-	Patch12();
-	Patch13();
-	Patch14();
-	Patch15();
-	Patch16();
-	Patch17();
-	Patch18();
-	Patch19();
-	Patch20();
-	Patch21();
-	Patch22();
-	Patch23();
 	Patch24();
 	Patch25();
-	Patch26();
-	Patch27();
-	Patch28();
-	Patch29();
-	Patch30();
-	Patch31();
-	Patch32();
 	Patch33();
-	Patch34();
-	Patch35();
-	Patch36();
-	Patch37();
-	Patch38();
-	Patch39();
-	Patch40();
-	Patch41();
-	Patch42();
-	Patch43();
-	Patch44();
-	Patch45();
-	Patch46();
-	Patch47();
-	Patch48();
 	Patch49();
 	Patch50();
 	Patch51();
@@ -2624,10 +2079,53 @@ static DWORD WINAPI Main()
 	Patch57();
 	Patch58();
 	Patch59();
+	Patch60();
+	Patch61();
+	Patch62();
+	Patch63();
+	Patch64();
+	Patch65();
+	Patch66();
+	Patch67();
+	Patch68();
+	Patch69();
+	Patch70();
+	Patch71();
+	Patch72();
+	Patch74();
+	Patch75();
+	Patch76();
+	Patch77();
+	Patch78();
+	Patch79();
+	Patch80();
+	Patch81();
+	Patch82();
+	Patch83();
+	Patch84();
+	Patch85();
+	Patch86();
+	Patch87();
+	Patch88();
+	Patch89();
+	Patch90();
+	Patch91();
+	Patch92();
+	Patch93();
+	Patch94();
+	Patch95();
+	Patch96();
+	Patch97();
+	Patch98();
+	Patch99();
+	Patch100();
+	Patch101();
 
 	MH_EnableHook(MH_ALL_HOOKS);
 
-	spdlog::info("Initialization finished");
+	const auto endTime = std::chrono::steady_clock::now();
+
+	spdlog::info("Initialization finished - Took {} ms", std::chrono::duration_cast<std::chrono::milliseconds>(endTime - startTime).count());
 	return 1;
 }
 
