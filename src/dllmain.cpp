@@ -714,7 +714,7 @@ static void Patch60()
 	spdlog::info(__func__);
 
 	// access to CCargen::ScenarioType
-	auto loc = hook::get_pattern<uint8_t>("81 E7 ? ? ? ? E8 ? ? ? ? 84 C0");
+	auto loc = hook::get_pattern<uint8_t>("49 8B CD 81 E7 ? ? ? ? E8 ? ? ? ? 84 C0 ");
 
 	/*
 	and     edi, 1FFh                                  81 E7 FF 01 00 00
@@ -722,7 +722,7 @@ static void Patch60()
 		v
 	and     edi, FFFFh                                 81 E7 FF FF 00 00
 	*/
-	hook::put<uint8_t>(loc + 3, 0xFF);
+	hook::put<uint8_t>(loc + 6, 0xFF);
 }
 
 static void Patch61()
