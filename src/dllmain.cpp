@@ -982,7 +982,7 @@ static void Patch71()
 
 	// two accesses to CCargen::ScenarioType
 
-	auto loc1 = hook::get_pattern<uint8_t>("B8 FF 01 00 00 4C 89 6D E7 66 23 C8 B8 FF 00 00 00");
+	auto loc1 = hook::get_pattern<uint8_t>("B8 FF 01 00 00 ? 89 ? E7 66 23 C8 B8 FF 00 00 00");
 	/*
 	mov     eax, 1FFh                                  B8 FF 01 00 00
 	mov     [rbp+8Fh+var_A8], r13                      4C 89 6D E7
